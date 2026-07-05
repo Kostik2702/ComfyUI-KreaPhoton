@@ -24,16 +24,20 @@ MANIFOLD_MEAN = [
     0.10810646414756775, -0.04556984826922417, 0.2223597764968872, 0.14363540709018707,
 ]
 
-# --- Guidance window (M6). delta candidate from exposure-formalism (docs/03); disabled by
-#     default until V1/E1b confirms the window doesn't degrade the TDM-distilled trajectory. ---
+# --- Guidance window (M6). V1/E1b RAN 2026-07-05 (docs/06 pre-registered protocol,
+#     27 img: {1.25,1.31,1.5} x P1/P2/P3 x seed1001-1003): delta=1.5 catastrophically
+#     hallucinates (P1: paint-like mutation on shoulder; P2: ghost face/eyes overlaid
+#     on the whole scene - worse than the E1 "crocodile skin" early-warning sign, a
+#     full compositional break, not a mild degrade). delta=1.25 and 1.31 both clean
+#     across all 9 cells each; per pre-registered tie-break (smallest passing
+#     candidate) delta=1.25 wins. Gate satisfied -> window enabled by default now. ---
 GUIDANCE = {
-    "delta": 1.25,              # CALIBRATE: V1 (E1b) — candidates {1.25, 1.31, 1.5}
+    "delta": 1.25,              # V1-VALIDATED (was CALIBRATE placeholder, same value)
     "lo": 0.7,
     "hi": 0.9,
-    "enabled_by_default": False,
-    "flat_cfg": 1.15,           # pre-E1b safe default when negative is connected (E1-proven:
-                                 # cfg1.3 clean, 1.15 is more conservative); "flat" mode = stock
-                                 # CFGGuider, constant cfg, no sigma-windowing.
+    "enabled_by_default": True,  # V1 gate passed (docs/04: "включается по умолчанию только после E1b")
+    "flat_cfg": 1.15,           # fallback for guidance_mode="flat" (explicit full-traj cfg,
+                                 # e.g. Advanced node override); "window" is now the Sampler default.
 }
 
 # Photo resolution buckets (Wan21 spatial /8 x DiT patch 2x2 -> effective /16;
