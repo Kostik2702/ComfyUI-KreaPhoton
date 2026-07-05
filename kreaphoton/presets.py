@@ -93,7 +93,12 @@ PRESETS = {
         "plunge": True,             # V2-VALIDATED: plunge=True consistently reduces/reverses the
                                      # lap_sharpness regression vs baseline at every sigma_r tested
         "detail_a": 0.50,           # CALIBRATE: V2 (M2 working range 0.4-0.8)
-        "eta0": 1.0,                # CALIBRATE: V4 (gated-eta ancestral strength, mid-phase)
+        "eta0": 1.0,                # V4-VALIDATED: {0.0,0.5,1.0} x P2 x seed1001-1003 (quality
+                                     # preset, N=16), 2026-07-05 - eta0=1.0 gave the CLEANEST
+                                     # shadows (lowest hf_noise/dark_blotch of the 3, not just
+                                     # visually artifact-free) - highest tested value wins per
+                                     # accept-rule, no regression found at this sr=0.65/plunge=True
+                                     # config (was the open M5 event-hypothesis risk; resolved safe)
         "sigma_gate": 0.10,         # M5-proven terminal cutoff
         "contraction": 0.82,        # CALIBRATE: V5 (design hypothesis range 0.8-0.85)
         "sampler": "euler",
