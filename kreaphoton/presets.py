@@ -92,7 +92,9 @@ PRESETS = {
                                      # P1 face crop: freckles naturally varied, no stamping)
         "plunge": True,             # V2-VALIDATED: plunge=True consistently reduces/reverses the
                                      # lap_sharpness regression vs baseline at every sigma_r tested
-        "detail_a": 0.50,           # CALIBRATE: V2 (M2 working range 0.4-0.8)
+        "detail_a": 0.50,           # UNTESTED (M2 working range 0.4-0.8; held constant across
+                                     # all of V1-V6 - no dedicated V-slot tested this value; not
+                                     # "V2" as previously mislabeled - V2 only swept sigma_r/plunge)
         "eta0": 1.0,                # V4-VALIDATED: {0.0,0.5,1.0} x P2 x seed1001-1003 (quality
                                      # preset, N=16), 2026-07-05 - eta0=1.0 gave the CLEANEST
                                      # shadows (lowest hf_noise/dark_blotch of the 3, not just
