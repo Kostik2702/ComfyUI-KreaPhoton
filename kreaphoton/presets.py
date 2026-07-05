@@ -1,0 +1,103 @@
+"""
+Single source of truth for every calibrated constant (planning-council R19).
+
+No other module hardcodes a preset value or a manifold constant. Values marked
+"CALIBRATE: V<n>" are starting hypotheses from docs/04 design math (M1-M6) and
+research/results/E*.json, pending the corresponding validation slot in
+docs/05-plan-kreaphoton-v1.md §V-protocol (S8.5/S10) — nothing here is final
+until that V-slot freezes it. Values NOT marked CALIBRATE are measured facts
+(e.g. MANIFOLD_STD/MEAN from research/results/E3_real.json), not guesses.
+"""
+
+# --- Manifold constants (MEASURED, research/results/E3_real.json normalized_per_channel,
+#     8 real photographs through qwen_image_vae; global std=0.4666, mean=-0.0070) ---
+MANIFOLD_STD = [
+    0.34837067127227783, 0.34285303950309753, 0.45075058937072754, 0.4954315721988678,
+    0.41811972856521606, 0.4532100260257721, 0.3540203869342804, 0.477848619222641,
+    0.3242858350276947, 0.3410053551197052, 0.31148362159729004, 0.38901352882385254,
+    0.3583352863788605, 0.4181098937988281, 0.36241018772125244, 0.4790935218334198,
+]
+MANIFOLD_MEAN = [
+    0.28196287155151367, 0.40890082716941833, -0.0024451527278870344, -0.08094137161970139,
+    -0.20453284680843353, -0.2656249701976776, -0.09275273233652115, -0.4799724817276001,
+    -0.24426628649234772, -0.19706667959690094, -0.037885453552007675, 0.37430068850517273,
+    0.10810646414756775, -0.04556984826922417, 0.2223597764968872, 0.14363540709018707,
+]
+
+# --- Guidance window (M6). delta candidate from exposure-formalism (docs/03); disabled by
+#     default until V1/E1b confirms the window doesn't degrade the TDM-distilled trajectory. ---
+GUIDANCE = {
+    "delta": 1.25,              # CALIBRATE: V1 (E1b) — candidates {1.25, 1.31, 1.5}
+    "lo": 0.7,
+    "hi": 0.9,
+    "enabled_by_default": False,
+}
+
+# --- Variety mix: level -> (a_latent, a_cond). ZPhoton's own latent-axis mixes are
+#     UNVALIDATED (vault decision "ZPhoton - аналитический форк Power Nodes", postscript
+#     2026-07-05: merged without the visual A/B its own gate required) — treat these as a
+#     fresh starting hypothesis for Krea2, not an inherited prior. ---
+VARIETY_LEVELS = {
+    "off":    (0.00, 0.00),
+    "low":    (0.20, 0.15),   # CALIBRATE: V3
+    "medium": (0.40, 0.30),   # CALIBRATE: V3
+    "high":   (0.65, 0.50),   # CALIBRATE: V3
+}
+VARIETY_COND_TAPS = (7, 8, 9, 10)   # semantic taps per Rebalance/Enhancer community consensus
+VARIETY_END = 0.90                  # boundary sigma below which latent variety applies (M4)
+
+# --- Presets (Sampler simple node: seed / preset / variety) ---
+PRESETS = {
+    "turbo/fast": {
+        "n_steps": 8,
+        "alpha": 3.158,             # e^1.15, stock ModelSamplingFlux shift; critic-verified base
+        "restart_frac": 0.25,       # CALIBRATE: V2
+        "sigma_r": 0.60,            # CALIBRATE: V2 (design hypothesis 0.55-0.65)
+        "plunge": False,            # CALIBRATE: V2
+        "detail_a": 0.50,           # CALIBRATE: V2 (M2 working range 0.4-0.8)
+        "eta0": 1.0,                # CALIBRATE: V4 (gated-eta ancestral strength, mid-phase)
+        "sigma_gate": 0.10,         # M5-proven terminal cutoff
+        "contraction": 0.82,        # CALIBRATE: V5 (design hypothesis range 0.8-0.85)
+        "sampler": "euler",
+    },
+    "turbo/balanced": {             # DEFAULT
+        "n_steps": 12,
+        "alpha": 3.158,
+        "restart_frac": 0.25,
+        "sigma_r": 0.60,
+        "plunge": False,
+        "detail_a": 0.60,
+        "eta0": 1.0,
+        "sigma_gate": 0.10,
+        "contraction": 0.82,
+        "sampler": "euler",
+    },
+    "turbo/quality": {
+        "n_steps": 16,
+        "alpha": 3.158,
+        "restart_frac": 0.25,
+        "sigma_r": 0.60,
+        "plunge": False,
+        "detail_a": 0.70,
+        "eta0": 1.0,                # mandatory gated-eta at this step count (design: "gated-eta обязателен")
+        "sigma_gate": 0.10,
+        "contraction": 0.82,
+        "sampler": "euler_2m",
+    },
+    "raw/experimental": {
+        "n_steps": 36,
+        "alpha": 3.158,             # CALIBRATE: raw canon is dynamic mu 0.5->1.15 (docs/01); unexplored
+        "restart_frac": 0.20,
+        "sigma_r": 0.45,
+        "plunge": False,
+        "detail_a": 0.50,
+        "eta0": 1.0,
+        "sigma_gate": 0.10,
+        "contraction": 1.00,       # no contraction calibration attempted for RAW yet
+        "sampler": "euler_2m",
+        "cfg": 3.5,                # RAW needs real CFG (negative works, unlike Turbo)
+        "experimental": True,
+    },
+}
+
+DEFAULT_PRESET = "turbo/balanced"
