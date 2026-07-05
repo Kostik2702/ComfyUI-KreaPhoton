@@ -1,0 +1,9 @@
+[project]
+name = "comfyui-kreaphoton"
+description = "Photorealism-focused sampling nodes for Krea 2 Turbo: analytic restart schedules, detail boost, seed variety, sigma-adaptive guidance."
+version = "0.1.0"
+license = { text = "MIT" }
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "KreaPhoton Nodes"
