@@ -252,6 +252,26 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *, seed,
     use_comp = clean_model is not None
     use_variety = variety_a_latent > 0.0 or variety_a_cond > 0.0
 
+    # SAFETY GUARD (found via S9 real-generation smoke, not caught by unit
+    # tests - H27/H28 precedent): gated-eta ancestral stepping (eta0>0)
+    # combined with ANY segment split (clean_model OR variety boundary)
+    # produces a reproducible speckle/mosaic corruption artifact. Isolated
+    # empirically: reproduces even with a NO-OP split (same model as
+    # clean_model, no variety operation applied at the boundary) - so the
+    # bug is in the split mechanism itself (_run_one's noise_scaling /
+    # inverse_noise_scaling round-trip across two separate guider.sample()
+    # calls), NOT in variety's math (tested clean in isolation, both on
+    # synthetic data and standalone real generations). Three independent
+    # algebraic derivations show the round-trip is EXACT in infinite
+    # precision; the leading suspect is bf16 rounding-error amplification
+    # through the 1/(1-sigma_boundary) factor (6.7-10x at sigma~0.85-0.90),
+    # unconfirmed - flagged as an open KREA2-NODES follow-up for S10/V2.
+    # Until root-caused, disable ancestral stepping automatically whenever a
+    # split will occur, so a visibly broken image is never silently shipped.
+    if (use_comp or use_variety) and eta0 > 0.0:
+        eta0 = 0.0
+        kw["eta0"] = 0.0
+
     split_idxs = set()
     variety_idx = None
     if use_comp:
@@ -285,7 +305,20 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *, seed,
         seg = sigmas[a:b + 1]
         sig_start = sig_list[a]
         m = clean_model if (use_comp and sig_start > composition_end) else model
+        # Each segment's KSAMPLER seeds its OWN ancestral RNG generator from
+        # `restart_seed` (sampling.py's gen = manual_seed((restart_seed+0x5EED)&mask)).
+        # Reusing the plain `seed` for every segment would replay the IDENTICAL
+        # ancestral noise draws at segment 2's first step as at segment 1's
+        # first step (same seed -> same draw sequence) - a "double-exposure" of
+        # the same frozen noise realization at two different points in the true
+        # trajectory. Bug found via real-generation smoke (S9): eta0>0 (ancestral)
+        # combined with ANY segment split (variety or clean_model boundary)
+        # produced a repeating mosaic/tiling artifact, reproduced regardless of
+        # restart_frac or variety_end - isolated to ancestral+split, not variety's
+        # own math (which tested clean in isolation on synthetic AND real data).
+        # Large per-segment offset decorrelates each segment's ancestral stream.
+        seg_seed = (int(seed) + k * 1_000_003) & 0xffffffffffffffff
         cur = _run_one(m, cur_positive, negative, cur, seg,
-                       seed=seed, noise=cur_noise, add_noise=cur_add, **kw)
+                       seed=seg_seed, noise=cur_noise, add_noise=cur_add, **kw)
         cur_noise, cur_add = None, False
     return cur

@@ -31,7 +31,23 @@ GUIDANCE = {
     "lo": 0.7,
     "hi": 0.9,
     "enabled_by_default": False,
+    "flat_cfg": 1.15,           # pre-E1b safe default when negative is connected (E1-proven:
+                                 # cfg1.3 clean, 1.15 is more conservative); "flat" mode = stock
+                                 # CFGGuider, constant cfg, no sigma-windowing.
 }
+
+# Photo resolution buckets (Wan21 spatial /8 x DiT patch 2x2 -> effective /16;
+# every dim below is divisible by 16). Canon anchor: user's ErikaNew4 baseline
+# 1088x1600 (3:2 portrait, docs/01 §5) sits in the L tier.
+RESOLUTION_BUCKETS = {
+    "S (~1.0 MP)":  {"1:1": (1024, 1024), "4:3": (1152, 864),  "3:2": (896, 1344),  "16:9": (1344, 768),  "9:16": (768, 1344)},
+    "M (~1.4 MP)":  {"1:1": (1184, 1184), "4:3": (1344, 1008), "3:2": (1040, 1568), "16:9": (1568, 880),  "9:16": (880, 1568)},
+    "L (~1.7 MP)":  {"1:1": (1312, 1312), "4:3": (1504, 1120), "3:2": (1088, 1600), "16:9": (1728, 960),  "9:16": (960, 1728)},
+    "XL (~2.1 MP)": {"1:1": (1440, 1440), "4:3": (1664, 1248), "3:2": (1184, 1776), "16:9": (1920, 1088), "9:16": (1088, 1920)},
+}
+RESOLUTION_ASPECTS = list(RESOLUTION_BUCKETS["L (~1.7 MP)"].keys())
+DEFAULT_RESOLUTION_SIZE = "L (~1.7 MP)"
+DEFAULT_RESOLUTION_ASPECT = "3:2"
 
 # --- Variety mix: level -> (a_latent, a_cond). ZPhoton's own latent-axis mixes are
 #     UNVALIDATED (vault decision "ZPhoton - аналитический форк Power Nodes", postscript

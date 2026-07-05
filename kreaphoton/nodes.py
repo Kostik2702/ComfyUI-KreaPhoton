@@ -1,30 +1,25 @@
-"""KreaPhoton node definitions.
-
-TEMPORARY (S3.5 tracer-bullet, planning-council H27/H28): KreaPhotonTracerSampler
-below is a throwaway diagnostic node, NOT part of the v1 scope (docs/04). It
-exists to prove KreaPhotonGuider drives a REAL guided generation correctly
-(NFE invariant, no composition-level bug that unit tests are structurally
-blind to - prior incident: ZIT-Hires-TWOPASS CFG double-count survived 80
-unit tests, only surfaced at first real generation). Removed once S7 builds
-the real KreaPhoton Sampler nodes.
-"""
-import comfy.model_management
-import comfy.sample
-import comfy.samplers
+"""KreaPhoton node definitions (S7). Four v1-scope nodes (docs/04):
+Sampler, Sampler (Advanced), Scheduler, Empty Latent. Relative imports only
+(hyphenated custom_nodes folder import trap - planning-council H12)."""
 import torch
 
-from .guidance import KreaPhotonGuider
-from .schedules import build_schedule
+from .presets import (DEFAULT_PRESET, DEFAULT_RESOLUTION_ASPECT, DEFAULT_RESOLUTION_SIZE,
+                      GUIDANCE, MANIFOLD_MEAN, MANIFOLD_STD, PRESETS,
+                      RESOLUTION_ASPECTS, RESOLUTION_BUCKETS, VARIETY_COND_TAPS,
+                      VARIETY_END, VARIETY_LEVELS)
+from .sampling import run_sampling
+from .schedules import ALPHA, build_schedule
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 
+CATEGORY = "KreaPhoton"
+_ORDER_FROM_SAMPLER_NAME = {"euler": 1, "euler_2m": 2}
 
-class KreaPhotonTracerSampler:
-    """S3.5(b) tracer only. Plain structure schedule (no restart), KreaPhotonGuider,
-    stock euler integrator - built by hand exactly like SamplerCustomAdvanced
-    (comfy_extras/nodes_custom_sampler.py:1013), since comfy.samplers.sample()
-    hardcodes the stock CFGGuider (D11) and cannot be used with a custom guider."""
+
+class KreaPhotonSampler:
+    """All-in-one: seed / preset / variety (docs/04 principle: minimum knobs,
+    everything else computed under the hood from presets.py)."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -32,65 +27,184 @@ class KreaPhotonTracerSampler:
             "required": {
                 "model": ("MODEL",),
                 "positive": ("CONDITIONING",),
-                "negative": ("CONDITIONING",),
                 "latent_image": ("LATENT",),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                "steps": ("INT", {"default": 12, "min": 1, "max": 64}),
-                "delta": ("FLOAT", {"default": 1.25, "min": 0.0, "max": 3.0, "step": 0.01}),
-            }
+                "preset": (list(PRESETS.keys()), {"default": DEFAULT_PRESET}),
+                "variety": (list(VARIETY_LEVELS.keys()), {"default": "off"}),
+            },
+            "optional": {
+                "negative": ("CONDITIONING",),
+                "clean_model": ("MODEL", {
+                    "tooltip": "Optional: composition phase (sigma > composition_end) runs on "
+                               "this clean checkpoint, LoRA identity/detail phase on `model` "
+                               "(anti-mutation, ZPhoton-proven pattern; unvalidated on krea2 "
+                               "LoRA stacks per docs/04 item 7)."}),
+            },
         }
 
-    RETURN_TYPES = ("LATENT", "STRING")
-    RETURN_NAMES = ("latent", "nfe_log")
+    RETURN_TYPES = ("LATENT",)
     FUNCTION = "sample"
-    CATEGORY = "KreaPhoton/tracer"
+    CATEGORY = CATEGORY
 
-    def sample(self, model, positive, negative, latent_image, seed, steps, delta):
-        latent = latent_image["samples"]
-        latent = comfy.sample.fix_empty_latent_channels(model, latent)
-        assert latent.ndim == 5, f"expected 5D Wan21 latent, got shape {tuple(latent.shape)}"
+    def sample(self, model, positive, latent_image, seed, preset, variety,
+              negative=None, clean_model=None):
+        p = PRESETS[preset]
+        sigmas = build_schedule(p["n_steps"], alpha=p["alpha"], restart_frac=p["restart_frac"],
+                                sigma_r=p["sigma_r"], plunge=p["plunge"])
+        a_latent, a_cond = VARIETY_LEVELS[variety]
 
-        sigmas = build_schedule(steps, restart_frac=0.0, plunge=False).to(torch.float32)
+        if negative is None:
+            guidance_mode = "off"
+        else:
+            guidance_mode = "window" if GUIDANCE["enabled_by_default"] else "flat"
+            # Negative is not None -> mode-dependent NFE cost (docs/04 item 6):
+            # pre-E1b "flat" runs full-trajectory cfg (2x NFE the whole run);
+            # "window" (post-E1b) only costs extra calls inside the Delta-window.
 
-        noise = comfy.sample.prepare_noise(latent, seed)
-
-        # --- NFE-invariant instrumentation (planning-council D14): count
-        # non-None entries in the `conds` list per predict_noise call. Each
-        # non-None entry contributes exactly B rows into the model forward
-        # regardless of comfy's internal batch-fusion strategy (samplers.py:233-305),
-        # so this is a valid proxy for "Sigma batch-dim / B" without needing to
-        # dig into hooked_to_run/to_batch internals. ---
-        nfe_log = []
-        orig_calc_cond_batch = comfy.samplers.calc_cond_batch
-
-        def _counting_calc_cond_batch(model_, conds, x_in, timestep, model_options):
-            n_active = sum(1 for c in conds if c is not None)
-            sigma_val = float(timestep.flatten()[0].item())
-            nfe_log.append((round(sigma_val, 4), n_active))
-            return orig_calc_cond_batch(model_, conds, x_in, timestep, model_options)
-
-        comfy.samplers.calc_cond_batch = _counting_calc_cond_batch
-        try:
-            guider = KreaPhotonGuider(model, delta=delta)
-            guider.set_conds(positive, negative)
-            sampler = comfy.samplers.sampler_object("euler")
-            samples = guider.sample(noise, latent, sampler, sigmas, seed=seed)
-        finally:
-            comfy.samplers.calc_cond_batch = orig_calc_cond_batch
-
-        samples = samples.to(device=comfy.model_management.intermediate_device(),
-                              dtype=comfy.model_management.intermediate_dtype())
-
-        log_lines = ["sigma=%.4f  n_active=%d  (%s window)" %
-                     (s, n, "IN" if n == 2 else "OUT") for s, n in nfe_log]
-        n_in = sum(1 for _, n in nfe_log if n == 2)
-        n_out = sum(1 for _, n in nfe_log if n == 1)
-        summary = ("KreaPhotonTracerSampler NFE log (delta=%.2f, steps=%d)\n" % (delta, steps)
-                   + "\n".join(log_lines)
-                   + "\n\nsummary: %d steps IN window (n_active=2), %d steps OUT (n_active=1)" % (n_in, n_out))
-
-        return ({"samples": samples}, summary)
+        out = run_sampling(
+            model, positive, negative, latent_image, sigmas, seed=seed,
+            guidance_mode=guidance_mode, flat_cfg=GUIDANCE["flat_cfg"],
+            delta=GUIDANCE["delta"], lo=GUIDANCE["lo"], hi=GUIDANCE["hi"],
+            contraction=p["contraction"], per_channel_contraction=False,
+            manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
+            detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
+            eta0=p["eta0"], sigma_gate=p["sigma_gate"],
+            clean_model=clean_model, composition_end=0.85,
+            variety_a_latent=a_latent, variety_a_cond=a_cond, variety_seed=seed,
+            variety_end=VARIETY_END, variety_cond_taps=VARIETY_COND_TAPS,
+        )
+        return (out,)
 
 
-NODE_CLASS_MAPPINGS["KreaPhotonTracerSampler"] = KreaPhotonTracerSampler
-NODE_DISPLAY_NAME_MAPPINGS["KreaPhotonTracerSampler"] = "KreaPhoton Tracer Sampler (S3.5, temporary)"
+class KreaPhotonSamplerAdvanced:
+    """Same engine, SIGMAS input, every parameter explicit (variety axes
+    exposed separately, per docs/04 scope note)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "positive": ("CONDITIONING",),
+                "latent_image": ("LATENT",),
+                "sigmas": ("SIGMAS",),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "sampler_order": (list(_ORDER_FROM_SAMPLER_NAME.keys()), {"default": "euler"}),
+                "detail_amount": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01}),
+                "detail_start": ("FLOAT", {"default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "detail_end": ("FLOAT", {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "detail_peak": ("FLOAT", {"default": 0.6, "min": 0.05, "max": 0.95, "step": 0.01}),
+                "eta0": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+                "sigma_gate": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "contraction": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.0, "step": 0.01}),
+                "per_channel_contraction": ("BOOLEAN", {"default": False}),
+                "guidance_mode": (["off", "flat", "window"], {"default": "off"}),
+                "flat_cfg": ("FLOAT", {"default": GUIDANCE["flat_cfg"], "min": 1.0, "max": 4.0, "step": 0.01}),
+                "delta": ("FLOAT", {"default": GUIDANCE["delta"], "min": 0.0, "max": 3.0, "step": 0.01}),
+                "guidance_lo": ("FLOAT", {"default": GUIDANCE["lo"], "min": 0.0, "max": 1.0, "step": 0.01}),
+                "guidance_hi": ("FLOAT", {"default": GUIDANCE["hi"], "min": 0.0, "max": 1.0, "step": 0.01}),
+                "variety_a_latent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "variety_a_cond": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "variety_end": ("FLOAT", {"default": VARIETY_END, "min": 0.0, "max": 1.0, "step": 0.01}),
+            },
+            "optional": {
+                "negative": ("CONDITIONING",),
+                "clean_model": ("MODEL",),
+                "composition_end": ("FLOAT", {"default": 0.85, "min": 0.0, "max": 1.0, "step": 0.01}),
+            },
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "sample"
+    CATEGORY = CATEGORY
+
+    def sample(self, model, positive, latent_image, sigmas, seed, sampler_order,
+              detail_amount, detail_start, detail_end, detail_peak, eta0, sigma_gate,
+              contraction, per_channel_contraction, guidance_mode, flat_cfg, delta,
+              guidance_lo, guidance_hi, variety_a_latent, variety_a_cond, variety_end,
+              negative=None, clean_model=None, composition_end=0.85):
+        out = run_sampling(
+            model, positive, negative, latent_image, sigmas, seed=seed,
+            guidance_mode=guidance_mode, flat_cfg=flat_cfg, delta=delta, lo=guidance_lo, hi=guidance_hi,
+            contraction=contraction, per_channel_contraction=per_channel_contraction,
+            manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
+            detail_amount=detail_amount, detail_start=detail_start, detail_end=detail_end,
+            detail_peak=detail_peak, order=_ORDER_FROM_SAMPLER_NAME[sampler_order],
+            eta0=eta0, sigma_gate=sigma_gate,
+            clean_model=clean_model, composition_end=composition_end,
+            variety_a_latent=variety_a_latent, variety_a_cond=variety_a_cond, variety_seed=seed,
+            variety_end=variety_end, variety_cond_taps=VARIETY_COND_TAPS,
+        )
+        return (out,)
+
+
+class KreaPhotonScheduler:
+    """SIGMAS generator. restart_frac>0 encodes a restart as an ascending
+    jump - the stock SamplerCustom will NOT understand it (use KreaPhoton
+    samplers, or KreaPhoton Sampler Advanced)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "steps": ("INT", {"default": 12, "min": 1, "max": 64}),
+                "alpha": ("FLOAT", {"default": ALPHA, "min": 1.0, "max": 10.0, "step": 0.001,
+                                    "tooltip": "Schedule steepness. Stock krea2 shift (mu=1.15) "
+                                               "== e^1.15 = 3.158 (default). Higher = softer/less "
+                                               "detail but more seed variance; critic-verified stock "
+                                               "is not arbitrary (docs/04)."}),
+                "restart_frac": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.6, "step": 0.01,
+                                          "tooltip": "Fraction of steps spent in the restart "
+                                                     "(re-noise) segment. 0 = plain descent, no "
+                                                     "restart jump encoded."}),
+                "sigma_r": ("FLOAT", {"default": 0.6, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "plunge": ("BOOLEAN", {"default": False}),
+            },
+        }
+
+    RETURN_TYPES = ("SIGMAS",)
+    FUNCTION = "build"
+    CATEGORY = CATEGORY
+
+    def build(self, steps, alpha, restart_frac, sigma_r, plunge):
+        return (build_schedule(steps, alpha=alpha, restart_frac=restart_frac,
+                               sigma_r=sigma_r, plunge=plunge),)
+
+
+class KreaPhotonEmptyLatent:
+    """Photo aspect ratios/sizes for krea2 (16ch, 4D output - comfy's own
+    fix_empty_latent_channels handles the 4D->5D Wan21 unsqueeze downstream,
+    inside the KreaPhoton samplers - planning-council D7/F11)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "size": (list(RESOLUTION_BUCKETS.keys()), {"default": DEFAULT_RESOLUTION_SIZE}),
+                "aspect": (RESOLUTION_ASPECTS, {"default": DEFAULT_RESOLUTION_ASPECT}),
+                "batch_size": ("INT", {"default": 1, "min": 1, "max": 64}),
+            },
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "generate"
+    CATEGORY = CATEGORY
+
+    def generate(self, size, aspect, batch_size):
+        width, height = RESOLUTION_BUCKETS[size][aspect]
+        latent = torch.zeros([batch_size, 16, height // 8, width // 8])
+        return ({"samples": latent},)
+
+
+NODE_CLASS_MAPPINGS.update({
+    "KreaPhotonSampler": KreaPhotonSampler,
+    "KreaPhotonSamplerAdvanced": KreaPhotonSamplerAdvanced,
+    "KreaPhotonScheduler": KreaPhotonScheduler,
+    "KreaPhotonEmptyLatent": KreaPhotonEmptyLatent,
+})
+NODE_DISPLAY_NAME_MAPPINGS.update({
+    "KreaPhotonSampler": "KreaPhoton Sampler",
+    "KreaPhotonSamplerAdvanced": "KreaPhoton Sampler (Advanced)",
+    "KreaPhotonScheduler": "KreaPhoton Scheduler",
+    "KreaPhotonEmptyLatent": "KreaPhoton Empty Latent",
+})
