@@ -100,7 +100,7 @@ PRESETS = {
                                      # accept-rule, no regression found at this sr=0.65/plunge=True
                                      # config (was the open M5 event-hypothesis risk; resolved safe)
         "sigma_gate": 0.10,         # M5-proven terminal cutoff
-        "contraction": 0.82,        # CALIBRATE: V5 (design hypothesis range 0.8-0.85)
+        "contraction": 0.70,        # V5-VALIDATED, see turbo/balanced comment
         "sampler": "euler",
     },
     "turbo/balanced": {             # DEFAULT
@@ -112,7 +112,15 @@ PRESETS = {
         "detail_a": 0.60,
         "eta0": 1.0,
         "sigma_gate": 0.10,
-        "contraction": 0.82,
+        "contraction": 0.70,        # V5-VALIDATED: {1.00,0.85,0.70} x P1/P2/P3 x seed1001-1003,
+                                     # 2026-07-05 - accept-rule is "most aggressive value with no
+                                     # inter-seed SSIM regression vs c=1.00 control" (guards against
+                                     # the E2 alpha-tightening "sameness" mechanism). Neither 0.85
+                                     # (SSIM +0.9%, flat) nor 0.70 (SSIM -4.7%, MORE diverse, not
+                                     # less) regressed - both pass, picked smallest per tie-break.
+                                     # hf_noise/dark_blotch improve monotonically with stronger
+                                     # contraction (cleaner, not "flatter"); P1/P3 visual check
+                                     # confirms no loss of photographic naturalness at 0.70.
         "sampler": "euler",
     },
     "turbo/quality": {
@@ -124,7 +132,7 @@ PRESETS = {
         "detail_a": 0.70,
         "eta0": 1.0,                # mandatory gated-eta at this step count (design: "gated-eta обязателен")
         "sigma_gate": 0.10,
-        "contraction": 0.82,
+        "contraction": 0.70,        # V5-VALIDATED, see turbo/balanced comment
         "sampler": "euler_2m",
     },
     "raw/experimental": {
