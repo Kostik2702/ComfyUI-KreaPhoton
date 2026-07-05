@@ -71,9 +71,14 @@ PRESETS = {
     "turbo/fast": {
         "n_steps": 8,
         "alpha": 3.158,             # e^1.15, stock ModelSamplingFlux shift; critic-verified base
-        "restart_frac": 0.25,       # CALIBRATE: V2
-        "sigma_r": 0.60,            # CALIBRATE: V2 (design hypothesis 0.55-0.65)
-        "plunge": False,            # CALIBRATE: V2
+        "restart_frac": 0.25,       # V2-VALIDATED (kept at design hypothesis, 54-img grid didn't test frac itself)
+        "sigma_r": 0.65,            # V2-VALIDATED: {0.55,0.60,0.65}x{plunge} grid, 2026-07-05 -
+                                     # higher sigma_r recovers shadow/fabric texture (dark_blotch
+                                     # +25..98% vs no-restart baseline = RECOVERED DETAIL, confirmed
+                                     # visually clean on P2 zoom-crops, not blotch/noise artifacts;
+                                     # P1 face crop: freckles naturally varied, no stamping)
+        "plunge": True,             # V2-VALIDATED: plunge=True consistently reduces/reverses the
+                                     # lap_sharpness regression vs baseline at every sigma_r tested
         "detail_a": 0.50,           # CALIBRATE: V2 (M2 working range 0.4-0.8)
         "eta0": 1.0,                # CALIBRATE: V4 (gated-eta ancestral strength, mid-phase)
         "sigma_gate": 0.10,         # M5-proven terminal cutoff
@@ -84,8 +89,8 @@ PRESETS = {
         "n_steps": 12,
         "alpha": 3.158,
         "restart_frac": 0.25,
-        "sigma_r": 0.60,
-        "plunge": False,
+        "sigma_r": 0.65,            # V2-VALIDATED, see turbo/fast comment
+        "plunge": True,             # V2-VALIDATED
         "detail_a": 0.60,
         "eta0": 1.0,
         "sigma_gate": 0.10,
@@ -96,8 +101,8 @@ PRESETS = {
         "n_steps": 16,
         "alpha": 3.158,
         "restart_frac": 0.25,
-        "sigma_r": 0.60,
-        "plunge": False,
+        "sigma_r": 0.65,            # V2-VALIDATED
+        "plunge": True,             # V2-VALIDATED
         "detail_a": 0.70,
         "eta0": 1.0,                # mandatory gated-eta at this step count (design: "gated-eta обязателен")
         "sigma_gate": 0.10,
