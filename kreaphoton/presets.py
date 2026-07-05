@@ -56,12 +56,25 @@ DEFAULT_RESOLUTION_ASPECT = "3:2"
 # --- Variety mix: level -> (a_latent, a_cond). ZPhoton's own latent-axis mixes are
 #     UNVALIDATED (vault decision "ZPhoton - аналитический форк Power Nodes", postscript
 #     2026-07-05: merged without the visual A/B its own gate required) — treat these as a
-#     fresh starting hypothesis for Krea2, not an inherited prior. ---
+#     fresh starting hypothesis for Krea2, not an inherited prior.
+#
+#     V3 RAN 2026-07-05 (24 img, off/low/medium/high x P1/P2 x seed1001-1003):
+#     mutation-cap=0 CONFIRMED (no identity/pose/composition break at any level on
+#     either prompt - values below are SAFE to ship). SVE comparison variant
+#     deferred (not a shippable v1 feature; M4 already proved it analytically
+#     non-variance-preserving, docs/03) - documented scope trim, not silently
+#     dropped. OPEN FINDING (not blocking, values kept as-is): dose-response is
+#     weak/non-monotonic - inter-seed SSIM barely moves low->medium->high on P1
+#     (0.395->0.396->0.396) and on P2 actually INCREASES at higher levels
+#     (0.430->0.431->0.445, i.e. LESS decorrelation at "high" than "low" - the
+#     opposite of intended). The off->low jump captures most of the effect;
+#     medium/high don't clearly add more variety. Follow-up: re-sweep
+#     (a_latent,a_cond) magnitudes with a wider low/medium/high spread. ---
 VARIETY_LEVELS = {
     "off":    (0.00, 0.00),
-    "low":    (0.20, 0.15),   # CALIBRATE: V3
-    "medium": (0.40, 0.30),   # CALIBRATE: V3
-    "high":   (0.65, 0.50),   # CALIBRATE: V3
+    "low":    (0.20, 0.15),   # V3: mutation-cap=0 OK; dose-response weak, see note above
+    "medium": (0.40, 0.30),   # V3: mutation-cap=0 OK; dose-response weak, see note above
+    "high":   (0.65, 0.50),   # V3: mutation-cap=0 OK; dose-response weak, see note above
 }
 VARIETY_COND_TAPS = (7, 8, 9, 10)   # semantic taps per Rebalance/Enhancer community consensus
 VARIETY_END = 0.90                  # boundary sigma below which latent variety applies (M4)
