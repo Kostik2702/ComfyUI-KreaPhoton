@@ -1,6 +1,8 @@
 """KreaPhoton node definitions (S7). Four v1-scope nodes (docs/04):
 Sampler, Sampler (Advanced), Scheduler, Empty Latent. Relative imports only
 (hyphenated custom_nodes folder import trap - planning-council H12)."""
+import contextlib
+
 import torch
 
 from .presets import (DEFAULT_PRESET, DEFAULT_RESOLUTION_ASPECT, DEFAULT_RESOLUTION_SIZE,
@@ -15,6 +17,59 @@ NODE_DISPLAY_NAME_MAPPINGS = {}
 
 CATEGORY = "KreaPhoton"
 _ORDER_FROM_SAMPLER_NAME = {"euler": 1, "euler_2m": 2}
+
+_VAE_PREVIEW_TOOLTIP = ("Optional: connect a VAE to show the decoded result as a "
+                        "thumbnail on this node (KSampler-Efficient style). Adds one "
+                        "VAE decode at the end of sampling; the LATENT output is unchanged.")
+
+PREVIEW_METHODS = ["auto", "latent2rgb", "taesd", "none"]
+_PREVIEW_METHOD_TOOLTIP = ("Live per-step preview of the forming image, independent of "
+                           "server/frontend preview settings. auto=latent2rgb (instant "
+                           "color projection); taesd needs lighttaew2_1 in models/vae_approx "
+                           "(falls back to latent2rgb if absent).")
+
+
+@contextlib.contextmanager
+def _live_preview(method):
+    """KSampler-Efficient trick (efficiency_nodes.py:501/:724): temporarily
+    override the GLOBAL preview method for the duration of sampling, restore
+    in finally. Node execution happens AFTER the core's per-prompt reset
+    (execution.py:727 -> latent_preview.py:136), so the node's own widget
+    wins regardless of CLI flags, Manager config, or frontend settings.
+    Sequential node execution makes the global mutation safe in practice
+    (same long-standing pattern as efficiency-nodes)."""
+    try:
+        import latent_preview
+        from comfy.cli_args import args
+    except ImportError:  # plain-assert unit tests without a ComfyUI tree
+        yield
+        return
+    prev = args.preview_method
+    args.preview_method = {
+        "auto": latent_preview.LatentPreviewMethod.Auto,
+        "latent2rgb": latent_preview.LatentPreviewMethod.Latent2RGB,
+        "taesd": latent_preview.LatentPreviewMethod.TAESD,
+    }.get(method, latent_preview.LatentPreviewMethod.NoPreviews)
+    try:
+        yield
+    finally:
+        args.preview_method = prev
+
+
+def _result_with_preview(out, vae):
+    """LATENT result, plus an on-node thumbnail when a VAE is connected:
+    decode -> PreviewImage temp files -> ui.images (execution.py ships ui
+    for ANY executed node, OUTPUT_NODE not required - verified at
+    execution.py:560-575). 5D video-shaped decode flattened to a 4D image
+    batch exactly like stock VAEDecode (nodes.py:313-314)."""
+    if vae is None:
+        return (out,)
+    import nodes as comfy_nodes  # lazy: top-level ComfyUI module, absent in unit tests
+    images = vae.decode(out["samples"])
+    if images.ndim == 5:
+        images = images.reshape(-1, images.shape[-3], images.shape[-2], images.shape[-1])
+    ui = comfy_nodes.PreviewImage().save_images(images, filename_prefix="KreaPhoton")["ui"]
+    return {"ui": ui, "result": (out,)}
 
 
 class KreaPhotonSampler:
@@ -31,6 +86,8 @@ class KreaPhotonSampler:
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "preset": (list(PRESETS.keys()), {"default": DEFAULT_PRESET}),
                 "variety": (list(VARIETY_LEVELS.keys()), {"default": "off"}),
+                "preview_method": (PREVIEW_METHODS, {"default": "auto",
+                                                     "tooltip": _PREVIEW_METHOD_TOOLTIP}),
             },
             "optional": {
                 "negative": ("CONDITIONING",),
@@ -39,6 +96,7 @@ class KreaPhotonSampler:
                                "this clean checkpoint, LoRA identity/detail phase on `model` "
                                "(anti-mutation, ZPhoton-proven pattern; unvalidated on krea2 "
                                "LoRA stacks per docs/04 item 7)."}),
+                "vae": ("VAE", {"tooltip": _VAE_PREVIEW_TOOLTIP}),
             },
         }
 
@@ -47,7 +105,7 @@ class KreaPhotonSampler:
     CATEGORY = CATEGORY
 
     def sample(self, model, positive, latent_image, seed, preset, variety,
-              negative=None, clean_model=None):
+              preview_method="auto", negative=None, clean_model=None, vae=None):
         p = PRESETS[preset]
         sigmas = build_schedule(p["n_steps"], alpha=p["alpha"], restart_frac=p["restart_frac"],
                                 sigma_r=p["sigma_r"], plunge=p["plunge"])
@@ -61,19 +119,20 @@ class KreaPhotonSampler:
             # pre-E1b "flat" runs full-trajectory cfg (2x NFE the whole run);
             # "window" (post-E1b) only costs extra calls inside the Delta-window.
 
-        out = run_sampling(
-            model, positive, negative, latent_image, sigmas, seed=seed,
-            guidance_mode=guidance_mode, flat_cfg=GUIDANCE["flat_cfg"],
-            delta=GUIDANCE["delta"], lo=GUIDANCE["lo"], hi=GUIDANCE["hi"],
-            contraction=p["contraction"], per_channel_contraction=False,
-            manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
-            detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
-            eta0=p["eta0"], sigma_gate=p["sigma_gate"],
-            clean_model=clean_model, composition_end=0.85,
-            variety_a_latent=a_latent, variety_a_cond=a_cond, variety_seed=seed,
-            variety_end=VARIETY_END, variety_cond_taps=VARIETY_COND_TAPS,
-        )
-        return (out,)
+        with _live_preview(preview_method):
+            out = run_sampling(
+                model, positive, negative, latent_image, sigmas, seed=seed,
+                guidance_mode=guidance_mode, flat_cfg=GUIDANCE["flat_cfg"],
+                delta=GUIDANCE["delta"], lo=GUIDANCE["lo"], hi=GUIDANCE["hi"],
+                contraction=p["contraction"], per_channel_contraction=False,
+                manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
+                detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
+                eta0=p["eta0"], sigma_gate=p["sigma_gate"],
+                clean_model=clean_model, composition_end=0.85,
+                variety_a_latent=a_latent, variety_a_cond=a_cond, variety_seed=seed,
+                variety_end=VARIETY_END, variety_cond_taps=VARIETY_COND_TAPS,
+            )
+        return _result_with_preview(out, vae)
 
 
 class KreaPhotonSamplerAdvanced:
@@ -106,11 +165,14 @@ class KreaPhotonSamplerAdvanced:
                 "variety_a_latent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "variety_a_cond": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "variety_end": ("FLOAT", {"default": VARIETY_END, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "preview_method": (PREVIEW_METHODS, {"default": "auto",
+                                                     "tooltip": _PREVIEW_METHOD_TOOLTIP}),
             },
             "optional": {
                 "negative": ("CONDITIONING",),
                 "clean_model": ("MODEL",),
                 "composition_end": ("FLOAT", {"default": 0.85, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "vae": ("VAE", {"tooltip": _VAE_PREVIEW_TOOLTIP}),
             },
         }
 
@@ -122,20 +184,22 @@ class KreaPhotonSamplerAdvanced:
               detail_amount, detail_start, detail_end, detail_peak, eta0, sigma_gate,
               contraction, per_channel_contraction, guidance_mode, flat_cfg, delta,
               guidance_lo, guidance_hi, variety_a_latent, variety_a_cond, variety_end,
-              negative=None, clean_model=None, composition_end=0.85):
-        out = run_sampling(
-            model, positive, negative, latent_image, sigmas, seed=seed,
-            guidance_mode=guidance_mode, flat_cfg=flat_cfg, delta=delta, lo=guidance_lo, hi=guidance_hi,
-            contraction=contraction, per_channel_contraction=per_channel_contraction,
-            manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
-            detail_amount=detail_amount, detail_start=detail_start, detail_end=detail_end,
-            detail_peak=detail_peak, order=_ORDER_FROM_SAMPLER_NAME[sampler_order],
-            eta0=eta0, sigma_gate=sigma_gate,
-            clean_model=clean_model, composition_end=composition_end,
-            variety_a_latent=variety_a_latent, variety_a_cond=variety_a_cond, variety_seed=seed,
-            variety_end=variety_end, variety_cond_taps=VARIETY_COND_TAPS,
-        )
-        return (out,)
+              preview_method="auto", negative=None, clean_model=None, composition_end=0.85,
+              vae=None):
+        with _live_preview(preview_method):
+            out = run_sampling(
+                model, positive, negative, latent_image, sigmas, seed=seed,
+                guidance_mode=guidance_mode, flat_cfg=flat_cfg, delta=delta, lo=guidance_lo, hi=guidance_hi,
+                contraction=contraction, per_channel_contraction=per_channel_contraction,
+                manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
+                detail_amount=detail_amount, detail_start=detail_start, detail_end=detail_end,
+                detail_peak=detail_peak, order=_ORDER_FROM_SAMPLER_NAME[sampler_order],
+                eta0=eta0, sigma_gate=sigma_gate,
+                clean_model=clean_model, composition_end=composition_end,
+                variety_a_latent=variety_a_latent, variety_a_cond=variety_a_cond, variety_seed=seed,
+                variety_end=variety_end, variety_cond_taps=VARIETY_COND_TAPS,
+            )
+        return _result_with_preview(out, vae)
 
 
 class KreaPhotonScheduler:
