@@ -51,8 +51,8 @@ def build_schedule(n_steps: int, alpha: float = ALPHA, restart_frac: float = 0.0
     mapped through sigma_from_t, then 0.0 appended.
 
     plunge=True: structure stops at PLUNGE_SIGMA_FLOOR, the appended 0.0 becomes a
-    plunge step (distilled model one-shots x0 from mid sigma) — v1 presets keep this
-    False pending calibration (docs/04 KNOWN UNKNOWNS).
+    plunge step (distilled model one-shots x0 from mid sigma). ACTIVE on all turbo
+    presets since V2 (2026-07-05); raw/experimental keeps it False.
 
     restart_frac>0: ascending jump to sigma_r encoded directly in SIGMAS, then linear
     descent back to 0 (n_r model calls carved out of the n_steps budget — total model
