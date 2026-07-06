@@ -9,6 +9,7 @@ from .presets import (DEFAULT_PRESET, DEFAULT_RESOLUTION_ASPECT, DEFAULT_RESOLUT
                       GUIDANCE, MANIFOLD_MEAN, MANIFOLD_STD, PRESETS,
                       RESOLUTION_ASPECTS, RESOLUTION_BUCKETS, VARIETY_COND_TAPS,
                       VARIETY_END, VARIETY_LEVELS)
+from .noise import slerp_noise
 from .sampling import run_sampling
 from .schedules import ALPHA, build_schedule
 
@@ -27,6 +28,25 @@ _PREVIEW_METHOD_TOOLTIP = ("Live per-step preview of the forming image, independ
                            "server/frontend preview settings. auto=latent2rgb (instant "
                            "color projection); taesd needs lighttaew2_1 in models/vae_approx "
                            "(falls back to latent2rgb if absent).")
+
+_BLEND_TOOLTIP = ("Composition blend toward seed_b (0 = off, pure seed; 1 = seed_b's "
+                  "composition). Spherically interpolates the two seeds' initial noise "
+                  "(on-manifold) to walk a coherent composition path between them. Note: "
+                  "identity moves with composition on krea2 - a composition explorer "
+                  "between two seeds, not fixed-identity variety. Needs seed_b set.")
+_SEED_B_TOOLTIP = "Second seed for the composition blend (see `blend`). Ignored when blend<=0."
+
+
+def _blend_noise(model, latent_image, seed, seed_b, blend):
+    """Composed initial noise for the composition blend, or None (use default
+    per-seed noise) when the blend is off. slerp(noise(seed), noise(seed_b))."""
+    if blend <= 0.0 or seed_b < 0:
+        return None
+    import comfy.sample  # lazy: top-level ComfyUI module, absent in unit tests
+    latent5d = comfy.sample.fix_empty_latent_channels(model, latent_image["samples"])
+    n_a = comfy.sample.prepare_noise(latent5d, int(seed))
+    n_b = comfy.sample.prepare_noise(latent5d, int(seed_b))
+    return slerp_noise(n_a, n_b, float(min(1.0, blend)))
 
 
 @contextlib.contextmanager
@@ -97,6 +117,10 @@ class KreaPhotonSampler:
                                "(anti-mutation, ZPhoton-proven pattern; unvalidated on krea2 "
                                "LoRA stacks per docs/04 item 7)."}),
                 "vae": ("VAE", {"tooltip": _VAE_PREVIEW_TOOLTIP}),
+                "seed_b": ("INT", {"default": -1, "min": -1, "max": 0xffffffffffffffff,
+                                   "tooltip": _SEED_B_TOOLTIP}),
+                "blend": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                                    "tooltip": _BLEND_TOOLTIP}),
             },
         }
 
@@ -105,11 +129,13 @@ class KreaPhotonSampler:
     CATEGORY = CATEGORY
 
     def sample(self, model, positive, latent_image, seed, preset, variety,
-              preview_method="auto", negative=None, clean_model=None, vae=None):
+              preview_method="auto", negative=None, clean_model=None, vae=None,
+              seed_b=-1, blend=0.0):
         p = PRESETS[preset]
         sigmas = build_schedule(p["n_steps"], alpha=p["alpha"], restart_frac=p["restart_frac"],
                                 sigma_r=p["sigma_r"], plunge=p["plunge"])
         a_latent, a_cond = VARIETY_LEVELS[variety]
+        noise = _blend_noise(model, latent_image, seed, seed_b, blend)
 
         if negative is None:
             guidance_mode = "off"
@@ -124,6 +150,7 @@ class KreaPhotonSampler:
                 model, positive, negative, latent_image, sigmas, seed=seed,
                 guidance_mode=guidance_mode, flat_cfg=GUIDANCE["flat_cfg"],
                 delta=GUIDANCE["delta"], lo=GUIDANCE["lo"], hi=GUIDANCE["hi"],
+                noise=noise,
                 contraction=p["contraction"], per_channel_contraction=False,
                 manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
                 detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
@@ -173,6 +200,17 @@ class KreaPhotonSamplerAdvanced:
                 "clean_model": ("MODEL",),
                 "composition_end": ("FLOAT", {"default": 0.85, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "vae": ("VAE", {"tooltip": _VAE_PREVIEW_TOOLTIP}),
+                "variety_seed": ("INT", {"default": -1, "min": -1, "max": 0xffffffffffffffff,
+                                         "tooltip": "Seed for the variety realization (lf_recompose "
+                                                    "/ cond rotation), decoupled from the generation "
+                                                    "seed. -1 = use the generation seed (default, "
+                                                    "identical to the simple node). Fix the "
+                                                    "generation seed and vary this to explore "
+                                                    "variety realizations of the SAME base."}),
+                "seed_b": ("INT", {"default": -1, "min": -1, "max": 0xffffffffffffffff,
+                                   "tooltip": _SEED_B_TOOLTIP}),
+                "blend": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                                    "tooltip": _BLEND_TOOLTIP}),
             },
         }
 
@@ -185,18 +223,21 @@ class KreaPhotonSamplerAdvanced:
               contraction, per_channel_contraction, guidance_mode, flat_cfg, delta,
               guidance_lo, guidance_hi, variety_a_latent, variety_a_cond, variety_end,
               preview_method="auto", negative=None, clean_model=None, composition_end=0.85,
-              vae=None):
+              vae=None, variety_seed=-1, seed_b=-1, blend=0.0):
+        v_seed = seed if variety_seed < 0 else int(variety_seed)
+        noise = _blend_noise(model, latent_image, seed, seed_b, blend)
         with _live_preview(preview_method):
             out = run_sampling(
                 model, positive, negative, latent_image, sigmas, seed=seed,
                 guidance_mode=guidance_mode, flat_cfg=flat_cfg, delta=delta, lo=guidance_lo, hi=guidance_hi,
+                noise=noise,
                 contraction=contraction, per_channel_contraction=per_channel_contraction,
                 manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
                 detail_amount=detail_amount, detail_start=detail_start, detail_end=detail_end,
                 detail_peak=detail_peak, order=_ORDER_FROM_SAMPLER_NAME[sampler_order],
                 eta0=eta0, sigma_gate=sigma_gate,
                 clean_model=clean_model, composition_end=composition_end,
-                variety_a_latent=variety_a_latent, variety_a_cond=variety_a_cond, variety_seed=seed,
+                variety_a_latent=variety_a_latent, variety_a_cond=variety_a_cond, variety_seed=v_seed,
                 variety_end=variety_end, variety_cond_taps=VARIETY_COND_TAPS,
             )
         return _result_with_preview(out, vae)

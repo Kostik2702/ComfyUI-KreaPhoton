@@ -61,6 +61,27 @@ def main():
     assert torch.allclose(out_no_mean, eps * std_t, atol=1e-6)
     print("     per_channel without manifold_mean: no offset applied (as documented)")
 
+    # --- slerp_noise: composition blend, on-manifold (norm ~ preserved) ---
+    print("[3] slerp_noise: endpoints exact + norm stays ~unit (on-manifold)")
+    a = torch.randn(1, 16, 1, 32, 24)
+    b = torch.randn(1, 16, 1, 32, 24)
+    # endpoints are bit-exact (t<=0 -> a, t>=1 -> b), no interpolation work
+    assert noise_mod.slerp_noise(a, b, 0.0) is a
+    assert noise_mod.slerp_noise(a, b, 1.0) is b
+    print("     t=0 -> a, t=1 -> b (bit-exact endpoints)  OK")
+    # intermediate: norm interpolates between |a| and |b| (stays on the sphere,
+    # so per-element std stays ~1 -> the composed field is a valid N(0,1) draw)
+    na, nb = a.norm().item(), b.norm().item()
+    for t in (0.25, 0.5, 0.75):
+        out = noise_mod.slerp_noise(a, b, t)
+        assert out.shape == a.shape
+        expected_norm = (1.0 - t) * na + t * nb
+        got = out.norm().item()
+        assert abs(got - expected_norm) / expected_norm < 1e-4, (got, expected_norm)
+        std_ratio = out.std().item()  # ~1 for a unit-N(0,1)-scale field on this grid
+        print("     t=%.2f: |out|=%.2f (expected %.2f), std=%.3f" % (t, got, expected_norm, std_ratio))
+        assert 0.85 < std_ratio < 1.15, "composed field must stay ~unit variance (on-manifold)"
+
     print("\ntest_noise: ALL ASSERTS PASSED")
 
 

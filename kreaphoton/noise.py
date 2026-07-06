@@ -46,3 +46,37 @@ def contract_noise(noise: torch.Tensor, strength: float, per_channel: bool = Fal
         return out
 
     return noise * strength
+
+
+def slerp_noise(a: torch.Tensor, b: torch.Tensor, t: float) -> torch.Tensor:
+    """Spherical interpolation of two noise fields, norm-interpolated so the
+    result stays ~unit-N(0,1) (on-manifold) at every t.
+
+    On krea2-turbo the composition is set by the INITIAL noise field (proven
+    2026-07-06: a fresh seed moves layout, a variance-preserving LF-band rotation
+    does not). slerp between two seeds' noise therefore walks a coherent
+    composition path between them - t=0 is a's composition, t=1 is b's, and the
+    distillate coheres every intermediate into a valid photoreal image. Note:
+    this moves identity WITH composition (they are coupled on this model), so it
+    is a composition explorer between two seeds, not fixed-identity variety.
+
+    t<=0 returns a unchanged (bit-identical), t>=1 returns b. High-dim gaussians
+    are near-orthogonal, so the interpolation angle is well away from 0/pi."""
+    if t <= 0.0:
+        return a
+    if t >= 1.0:
+        return b
+    af, bf = a.reshape(-1).double(), b.reshape(-1).double()
+    na, nb = af.norm(), bf.norm()
+    ua = af / na.clamp_min(1e-12)
+    ub = bf / nb.clamp_min(1e-12)
+    dot = (ua * ub).sum().clamp(-1.0, 1.0)
+    omega = torch.acos(dot)
+    so = torch.sin(omega)
+    if so.abs() < 1e-6:
+        out = (1.0 - t) * af + t * bf
+    else:
+        out = (torch.sin((1.0 - t) * omega) / so) * af + (torch.sin(t * omega) / so) * bf
+    target_norm = (1.0 - t) * na + t * nb
+    out = out / out.norm().clamp_min(1e-12) * target_norm
+    return out.reshape(a.shape).to(a.dtype)

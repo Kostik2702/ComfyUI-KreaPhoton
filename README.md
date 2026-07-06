@@ -39,6 +39,8 @@ Minimum knobs by design. Inputs:
 | `negative` (opt) | CONDITIONING | enables the σ-window guidance (see Guidance) |
 | `clean_model` (opt) | MODEL | anti-mutation composition split (see clean_model) |
 | `vae` (opt) | VAE | connect to get the decoded result as a thumbnail on the node |
+| `seed_b` (opt) | INT | second seed for the composition blend (−1 = off) |
+| `blend` (opt) | FLOAT | 0 = off; >0 spherically interpolates the composition toward `seed_b` (see Composition blend) |
 
 Output: `LATENT`.
 
@@ -50,7 +52,10 @@ gated ancestral (`eta0`, `sigma_gate`), noise `contraction` (+ `per_channel_cont
 using measured per-channel manifold stats), guidance (`guidance_mode` off/flat/window,
 `flat_cfg`, `delta`, `guidance_lo/hi`), variety axes separately (`variety_a_latent`,
 `variety_a_cond`, `variety_end`), `composition_end` for the clean_model split, plus the
-same `preview_method` / `negative` / `clean_model` / `vae` as the simple node.
+same `preview_method` / `negative` / `clean_model` / `vae` / `seed_b` / `blend` as the
+simple node. Also exposes `variety_seed` — the variety realization seed decoupled from
+the generation seed (−1 = use the generation seed); fix the generation seed and vary this
+to explore variety realizations of the same base.
 
 ### KreaPhoton Scheduler
 
@@ -129,6 +134,22 @@ is assembled manually, mirroring `SamplerCustomAdvanced`):
   `lighttaew2_1` in `models/vae_approx` (falls back to latent2rgb if absent).
 - **On-node thumbnail** (`vae` input): one VAE decode at the end, displayed on the node
   like KSampler (Efficient); the LATENT output is unchanged.
+
+### Composition blend (`seed_b` + `blend`)
+
+On Krea 2 Turbo the composition is set by the **initial noise field** — a fresh seed
+moves the whole layout. `blend` spherically interpolates (slerp) the initial noise
+between `seed` and `seed_b`, giving a coherent, on-manifold composition dial: `0` = pure
+`seed`, `1` = pure `seed_b`, in between = a genuinely new intermediate composition the
+distillate coheres into a photoreal image (validated — full-frame composition spread at
+the midpoint reaches ~96% of a seed change, with no ghosting/artifacts).
+
+This is the composition-variety lever a latent perturbation cannot provide: measured on
+this model, the variety knob and other variance-preserving latent edits move **texture**,
+not composition — only a change to the whole noise field moves layout. **Caveat:**
+because composition and identity are coupled through the noise field here, `blend` moves
+identity *with* composition — it is a composition explorer between two seeds, not a
+fixed-identity variety control. `blend = 0` (default) is a bit-exact no-op.
 
 ---
 
