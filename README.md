@@ -1,152 +1,196 @@
 # ComfyUI-KreaPhoton
 
-Photorealism-focused sampling nodes for **Krea 2 Turbo**. Analytic restart schedules, detail
-boost, seed variety (latent + conditioning), σ-adaptive guidance. Own math throughout (see
-`docs/` in the parent research project `D:\Project\Krea2 Nodes\` — design docs/04, plan docs/05,
-math proofs docs/03, all research/models/m1-m6 scripts this package ports).
+Photorealism-focused sampling nodes for **Krea 2 Turbo** in ComfyUI. Custom sampler
+mathematics built specifically for this model — analytic restart schedules, detail
+σ-nudge, gated ancestral stochasticity, σ-window guidance, photo-manifold noise
+contraction, and two-axis seed variety — every calibrated constant validated by
+pre-registered protocols on real generations (400+ images across the E/M/V research
+cycle), not copied from SD/SDXL folklore.
 
-## Nodes (v1 scope)
+> Krea 2 Turbo is a CFG-distilled rectified-flow DiT on the Wan21 16-channel latent.
+> Most classic sampler tricks (naive CFG, SDE ancestral defaults, SD-tuned schedules)
+> either do nothing or actively break it. This pack is the result of measuring what
+> actually works on this exact model.
 
-- **KreaPhoton Sampler** — all-in-one: seed, preset, variety.
-- **KreaPhoton Sampler (Advanced)** — SIGMAS input, every parameter explicit, variety axes separate.
-- **KreaPhoton Scheduler** — SIGMAS generator (restart = ascending jump; stock `SamplerCustom`
-  will NOT understand it — use KreaPhoton samplers).
-- **KreaPhoton Empty Latent** — photo aspect ratios/sizes for Krea2 (16ch, 4D — see contract below).
+---
 
-## Interface contract (fixed before parallel module work — planning-council F16/D10/D11)
+## Nodes
 
-Modules: `kreaphoton/{presets,schedules,guidance,noise,variety,sampling,nodes}.py`.
+| Node | Purpose |
+|---|---|
+| **KreaPhoton Sampler** | All-in-one: seed / preset / variety. Everything else computed from validated presets. |
+| **KreaPhoton Sampler (Advanced)** | Same engine, SIGMAS input, every parameter exposed. |
+| **KreaPhoton Scheduler** | SIGMAS generator with the restart segment encoded (see warning below). |
+| **KreaPhoton Empty Latent** | Photo aspect ratios / megapixel tiers for Krea2 (16-channel latent). |
 
-### `presets.py`
-Single source of truth for every calibrated constant. No other module hardcodes a preset value.
-```python
-PRESETS: dict[str, dict]      # "turbo/fast" | "turbo/balanced" (default) | "turbo/quality" | "raw/experimental"
-                               # keys per preset: n_steps, alpha, restart_frac, sigma_r, plunge,
-                               #   detail_a, eta0, sigma_gate, contraction, sampler ("euler"|"euler_2m")
-VARIETY_LEVELS: dict[str, tuple[float, float]]   # "off"/"low"/"medium"/"high" -> (a_latent, a_cond)
-GUIDANCE: dict                # delta, lo=0.7, hi=0.9, enabled_by_default=False (gated by V1/E1b)
-MANIFOLD_STD: list[float]     # 16 floats, from research/results/E3_real.json normalized_per_channel.std
-MANIFOLD_MEAN: list[float]    # 16 floats, same source (Advanced-only per-channel bias)
+### KreaPhoton Sampler
+
+Minimum knobs by design. Inputs:
+
+| Input | Type | Notes |
+|---|---|---|
+| `model` | MODEL | Krea 2 Turbo checkpoint |
+| `positive` | CONDITIONING | |
+| `latent_image` | LATENT | use KreaPhoton Empty Latent |
+| `seed` | INT | drives sampling, restart re-noise, ancestral RNG and variety |
+| `preset` | combo | `turbo/fast` (8 steps) / `turbo/balanced` (12, default) / `turbo/quality` (16, euler_2m) / `raw/experimental` (36) |
+| `variety` | combo | `off` / `low` / `medium` / `high` — inter-seed decorrelation, see Variety |
+| `preview_method` | combo | live per-step preview: `auto` / `latent2rgb` / `taesd` / `none` |
+| `negative` (opt) | CONDITIONING | enables the σ-window guidance (see Guidance) |
+| `clean_model` (opt) | MODEL | anti-mutation composition split (see clean_model) |
+| `vae` (opt) | VAE | connect to get the decoded result as a thumbnail on the node |
+
+Output: `LATENT`.
+
+### KreaPhoton Sampler (Advanced)
+
+Adds explicit control over everything the presets compute: `sigmas` (SIGMAS input),
+`sampler_order` (euler / euler_2m), detail envelope (`detail_amount/start/end/peak`),
+gated ancestral (`eta0`, `sigma_gate`), noise `contraction` (+ `per_channel_contraction`
+using measured per-channel manifold stats), guidance (`guidance_mode` off/flat/window,
+`flat_cfg`, `delta`, `guidance_lo/hi`), variety axes separately (`variety_a_latent`,
+`variety_a_cond`, `variety_end`), `composition_end` for the clean_model split, plus the
+same `preview_method` / `negative` / `clean_model` / `vae` as the simple node.
+
+### KreaPhoton Scheduler
+
+`steps`, `alpha` (schedule steepness; default 3.158 = e^1.15, the stock Krea2
+`ModelSamplingFlux` shift — verified equivalent to live `calculate_sigmas` within 1e-6),
+`restart_frac`, `sigma_r`, `plunge` → SIGMAS.
+
+⚠️ **A restart schedule encodes one ascending σ-jump.** The stock `SamplerCustom` /
+k-diffusion samplers do not understand ascending sigmas — feed KreaPhoton SIGMAS only
+into KreaPhoton samplers.
+
+### KreaPhoton Empty Latent
+
+Megapixel tiers S (~1.0 MP) / M (~1.4) / L (~1.7, default) / XL (~2.1) × aspects
+1:1, 4:3, 3:2 (default), 16:9, 9:16. All dimensions divisible by 16 (VAE /8 × DiT
+patch 2×2).
+
+---
+
+## Quick start
+
+```
+CheckpointLoader ──► KreaPhoton Sampler ──► VAEDecode ──► SaveImage
+CLIPTextEncode ────► (positive)   ▲
+KreaPhoton Empty Latent ──────────┘
 ```
 
-### `schedules.py` (S3)
-```python
-def sigma_from_t(t: float, alpha: float) -> float
-def t_from_sigma(sigma: float, alpha: float) -> float
-def flux_time_shift(mu: float, t: float) -> float          # cross-check only, vs live calculate_sigmas
-def build_schedule(n_steps: int, alpha: float, restart_frac: float,
-                    sigma_r: float, plunge: bool) -> torch.Tensor
-    # monotonically decreasing SIGMAS except ONE ascending jump at the restart boundary.
-    # unit test: features-off (restart_frac=0, plunge=False) must equal live
-    # comfy.model_sampling.ModelSamplingFlux(mu=1.15).calculate_sigmas(...) within 1e-6 (not a numpy replica).
+1. Clone into `ComfyUI/custom_nodes/` (see Installation), restart ComfyUI.
+2. Wire the graph above, pick a preset, hit Queue.
+3. Optionally connect the VAE to the sampler's `vae` input — the finished image shows
+   directly on the node; `preview_method=auto` (default) shows the image forming from
+   noise every step, so you can cancel early.
 
-@dataclass
-class SegmentMap:
-    structure_end: int
-    plunge_idx: int | None
-    restart_start: int | None
-    ambiguous: bool                                          # True => graceful degrade (S3b)
+---
 
-def infer_segment_map(sigmas: torch.Tensor) -> SegmentMap    # S3b: handles external/truncated/duplicate-boundary SIGMAS
+## What the engine actually does
+
+One custom KSAMPLER loop orchestrated through a `CFGGuider` subclass (the stock
+`comfy.samplers.sample()` hardcodes its guider, so the whole prepare/guide/sample chain
+is assembled manually, mirroring `SamplerCustomAdvanced`):
+
+- **Analytic restart schedule (M3)** — a re-noise segment (`restart_frac`, `sigma_r`,
+  optional terminal `plunge`) encoded directly in the SIGMAS array as an ascending jump;
+  the loop performs a proper rectified-flow re-noise at that boundary with a dedicated
+  RNG stream. Validated (V2): recovers shadow/fabric texture without stamping artifacts.
+- **Detail σ-nudge (M2)** — step-relative shift of the σ the model is evaluated at,
+  shaped by a smoothstep envelope (`detail_start/end/peak`); skipped on plunge and
+  final steps.
+- **Gated-eta ancestral (M5)** — CONST/rectified-flow ancestral stepping (same math as
+  comfy's `sample_euler_ancestral_RF`) with `eta(σ) = eta0 · smoothstep(σ; σ_gate, 0.35)`:
+  exactly zero near the end (terminal ancestral injection is the dark-blotch driver),
+  full strength mid-phase. Validated (V4): `eta0=1.0` gives the *cleanest* shadows.
+- **σ-window guidance (M6, V1)** — real CFG only inside σ∈[0.7, 0.9] with `delta=1.25`
+  (Δ=1.5 catastrophically hallucinates — validated), implemented as a `CFGGuider`
+  subclass overriding `predict_noise` only. Outside the window comfy's cfg=1.0
+  optimization skips the uncond forward entirely, so a connected `negative` costs extra
+  NFE only inside the window (~15–25% of steps), not 2× the whole run.
+- **Manifold noise contraction (V5)** — initial unit noise contracted toward the photo
+  manifold (`contraction=0.70`, measured from real photographs through the VAE:
+  global σ=0.4666). Cleaner shadows with *more* inter-seed diversity, not less.
+  Advanced node can use measured per-channel std/mean instead of the scalar.
+- **Two-axis seed variety (M4, V3)** — at a σ-boundary (default 0.90): low-frequency
+  FFT band re-composition of the latent (AC-only — Wan21 channels are not zero-mean)
+  + rotation of semantic conditioning taps (7–10) of the packed 30720-dim Krea2 cond.
+  Mutation-cap validated: no identity/pose/composition breaks at any level.
+- **clean_model split (anti-mutation)** — optional: composition phase (σ > 0.85) runs
+  on a clean checkpoint, the LoRA identity/detail phase on `model`. ZPhoton-proven
+  pattern; unvalidated on Krea2 LoRA stacks yet.
+
+### Previews
+
+- **Live per-step preview** (`preview_method` widget): the node temporarily overrides
+  the global ComfyUI preview method for the duration of sampling and restores it
+  afterwards — it works regardless of `--preview-method` CLI flags, Manager config or
+  frontend settings. `auto` = latent2rgb (instant color projection); `taesd` needs
+  `lighttaew2_1` in `models/vae_approx` (falls back to latent2rgb if absent).
+- **On-node thumbnail** (`vae` input): one VAE decode at the end, displayed on the node
+  like KSampler (Efficient); the LATENT output is unchanged.
+
+---
+
+## Presets (all values validated or honestly labeled)
+
+| | fast | balanced (default) | quality | raw/experimental |
+|---|---|---|---|---|
+| steps | 8 | 12 | 16 | 36 |
+| sampler | euler | euler | euler_2m (AB2) | euler_2m |
+| restart `frac` / `σ_r` / plunge | 0.25 / 0.65 / on | 0.25 / 0.65 / on | 0.25 / 0.65 / on | 0.20 / 0.45 / off |
+| detail | 0.50 | 0.60 | 0.70 | 0.50 |
+| eta0 / σ_gate | 1.0 / 0.10 | 1.0 / 0.10 | 1.0 / 0.10 | 1.0 / 0.10 |
+| contraction | 0.70 | 0.70 | 0.70 | 1.00 (uncalibrated) |
+
+`σ_r=0.65`, `plunge`, `eta0=1.0`, `contraction=0.70`, `delta=1.25` are V-protocol
+validated on real generations (pre-registered seeds/cells/accept-rules — no p-hacking);
+`detail_a` values are design hypotheses from the M2 working range, labeled as such in
+`presets.py`. `raw/experimental` targets the non-distilled RAW mode (real CFG 3.5) and
+is largely unexplored.
+
+---
+
+## Installation
+
+```sh
+cd ComfyUI/custom_nodes
+git clone https://github.com/Kostik2702/ComfyUI-KreaPhoton.git
 ```
 
-### `guidance.py` (S6, 6th module — planning-council D10)
-```python
-def g_window(sigma: float, delta: float, lo: float = 0.7, hi: float = 0.9) -> float
-    # MUST return EXACTLY 1.0 outside [lo, hi] (smoothstep clamp, not epsilon-form like sigmoid).
+Restart ComfyUI. No extra Python dependencies — torch and comfy only.
 
-class KreaPhotonGuider(comfy.samplers.CFGGuider):
-    """Overrides ONLY predict_noise. Reads self.conds (post process_conds), never original_conds.
-    At cond_scale == 1.0 (outside window), relies on STOCK comfy behaviour: uncond_ = None,
-    zero extra NFE (comfy/samplers.py:609-612) — do NOT set disable_cfg1_optimization.
-    RULE: guidance/variety windows are NEVER implemented via sampler_cfg_function /
-    sampler_post_cfg_function (model_options hooks) — at cfg=1.0 those hooks receive
-    uncond=zeros silently; only a CFGGuider subclass sees the real (skipped-or-not) uncond state.
-    After guider.sample(): replicate the comfy.sample tail — .to(intermediate_device(), intermediate_dtype()).
-    """
-    def __init__(self, model_patcher, delta: float, lo: float = 0.7, hi: float = 0.9): ...
-    def predict_noise(self, x, timestep, model_options=None, seed=None): ...
+Requirements: ComfyUI (0.2x, tested on 0.26) + a Krea 2 Turbo checkpoint
+(Wan21 16-channel latent family).
 
-# Unit test (NFE invariant, planning-council D14): count Σ batch-dim / B summed across forwards
-# for one step (comfy batches cond+uncond into ONE forward when VRAM allows — samplers.py:260-283,
-# so counting *calls* is flaky). Invariant: outside window Σ=1×B, inside window Σ=2×B, regardless
-# of batching strategy. Equivalent: len(cond_or_uncond) list per forward, summed.
+---
+
+## Known limitations
+
+- **eta0 is auto-disabled whenever a segment split occurs** (variety ≠ off or
+  clean_model connected). Ancestral stepping combined with any split produced a
+  reproducible speckle/mosaic artifact (isolated to the split round-trip mechanism,
+  suspected bf16 error amplification through 1/(1−σ_boundary); under investigation).
+  A safety guard silently forces eta0=0 in that combination so a broken image is
+  never shipped.
+- Variety dose-response is weak/non-monotonic beyond `low` (V3 open finding): the
+  off→low jump captures most of the decorrelation; a magnitude re-sweep is planned.
+- `raw/experimental` preset: schedule steepness for the dynamic-μ RAW canon is
+  uncalibrated.
+- Restart SIGMAS are KreaPhoton-only (ascending jump, see Scheduler warning).
+
+## Testing
+
+Plain-assert test suite (`tests/run_tests.py`, no pytest dependency — runs under the
+ComfyUI embedded interpreter). Tests assert invariants, not literal preset values:
+schedule equivalence to stock `calculate_sigmas` at features-off, restart variance
+balance, NFE Σ-batch-dim invariant of the guidance window, bit-exactness of untouched
+conditioning taps, `corr(lf′, lf) = √(1−a²)` for the LF re-composition.
+
+```sh
+python tests/run_tests.py
 ```
 
-### `noise.py` (S4)
-```python
-# Sampler loop lives in NORMALIZED (Wan21 model) space (planning-council B1/F9 trace:
-# comfy/sample.py prepare_noise draws unit N(0,1) directly in that space, no latent_format
-# transform applied to noise, ever). MANIFOLD_STD/MEAN from presets.py apply DIRECTLY, no rescale.
-def contract_noise(noise: torch.Tensor, strength: float, per_channel: bool = False) -> torch.Tensor
-    # noise: 5D unit N(0,1), shape (B,16,1,H,W). strength: 1.0 = stock, 0.47 = full contraction
-    # to the photo manifold (research/results/E3_real.json). per_channel=True (Advanced only)
-    # uses MANIFOLD_STD/MEAN vectors instead of the scalar strength.
-    # Applied BEFORE noise_scaling (sigma*eps + (1-sigma)*x0), never inside EmptyLatent
-    # (a non-zero "empty" latent would pass process_latent_in and get shifted — F11/R12).
-```
+## License
 
-### `variety.py` (S5)
-```python
-def lf_recompose(x5: torch.Tensor, seed_v: int, a: float, cutoff: float | None = None) -> torch.Tensor
-    # x5: 5D (B,16,1,H,W), NORMALIZED space. squeeze(2) for 2D-FFT band split, unsqueeze(2) back.
-    # AC-ONLY correction (planning-council M4, against ZPhoton original): rotate only the
-    # AC part of the LF band, exclude per-channel DC (Wan21 channels are NOT zero-mean —
-    # energy-matching on the raw norm breaks corr(lf',lf)=sqrt(1-a^2) otherwise).
-    # cutoff defaults to 2*N_cyc/G scaling rule (M4), auto from x5 grid size if None.
-
-def cond_tap_rotation(cond: torch.Tensor, taps: tuple[int, ...], a: float, seed: int) -> torch.Tensor
-    # cond: packed (B, seq, 30720) tap-major. Unpack via the SAME permute as
-    # comfy/text_encoders/krea2.py:63-65 (ground-truth test required — community bug precedent:
-    # Krea2T-Enhancer sliced 24x1280 chunks instead of 12x2560 taps, wrong layer boundary).
-    # Untouched taps must be bit-identical.
-
-def apply_variety(level: str, latent5d=None, cond=None, seed=None) -> tuple
-    # level -> (a_latent, a_cond) from presets.VARIETY_LEVELS; dispatches to lf_recompose /
-    # cond_tap_rotation as applicable inputs are given. Advanced node exposes axes separately.
-```
-
-### `sampling.py` (S6)
-```python
-def run_sampling(model, positive, negative, latent_image, seed, preset: dict,
-                  variety_level: str = "off", clean_model=None,
-                  guider_cls=KreaPhotonGuider) -> dict
-    # 1. fix_empty_latent_channels(model, latent_image, ...) + assert latent.ndim == 5 (D7/R12,
-    #    mandatory here — Sampler nodes bypass comfy.sample.sample()/common_ksampler entirely,
-    #    B4/D11: comfy.samplers.sample() hardcodes stock CFGGuider, so building our own guider
-    #    means the whole prepare/guide/sample chain is assembled by hand, mirroring
-    #    SamplerCustomAdvanced, not common_ksampler).
-    # 2. build_schedule (schedules.py) -> infer_segment_map for restart/plunge boundaries.
-    # 3. contract_noise (noise.py) on the initial unit-noise tensor, BEFORE noise_scaling.
-    # 4. KSAMPLER-style loop: euler/euler_2m (AB2, fallback on first segment step / |dt|>0.25),
-    #    M2 step-relative sigma nudge, M3 restart re-noise (separate RNG), M5 gated-eta ancestral
-    #    stochastic component (eta(sigma) = eta0 * smoothstep(sigma; sigma_gate), terminal -> 0).
-    #    variety.apply_variety hooked at segment boundaries if variety_level != "off".
-    #    Guidance: instantiate guider_cls(model, **preset["guidance"]) INSIDE this function;
-    #    guider.sample(...) replaces the raw sampler_function call.
-    # 5. .to(intermediate_device(), intermediate_dtype()) tail replicated after guider.sample() (F18a).
-    # Returns {"samples": tensor} dict (standard ComfyUI LATENT).
-```
-
-### `nodes.py` (S7)
-4 classes wrapping the above; relative imports only (`from .schedules import ...`, never absolute
-`from schedules import ...` — hyphenated custom_nodes folder import trap). `fix_empty_latent_channels`
-called explicitly inside the Sampler nodes (not delegated). Tooltips: negative input cost is
-**mode-dependent** — pre-E1b (`GUIDANCE.enabled_by_default=False`): full-trajectory cfg 1.15, 2x
-NFE for the WHOLE run; post-E1b: extra calls only inside the Δ-window (~15-25% of steps). A stock
-`CFGGuider(cfg>1)` wired externally onto our SAMPLER output re-opens the double-count topology from
-outside the pack — documented, with a runtime sanity log if detected.
-
-## Testing (`tests/`)
-
-Ported from `research/models/m1-m6_*.py`. Assert **invariants**, never literal preset values
-(planning-council R19): sgm_uniform equivalence at features-off, M3 variance balance on real
-manifold stats, monotonic-except-restart, NFE Σ-batch-dim invariant, cond_tap_rotation
-bit-exactness on untouched taps, lf_recompose corr=sqrt(1-a^2) + AC-only DC preservation.
-No `pytest` in the ComfyUI embedded interpreter — plain-assert runner (`tests/run_tests.py`),
-matching `research/models/*.py` style. `--import-mode=importlib` if run under a dev-machine pytest.
-
-## Status
-
-Implementation per `D:\Project\Krea2 Nodes\docs\05-plan-kreaphoton-v1.md` (planning council,
-2026-07-05, full convergence). Progress tracked in vault `learnings/active/KREA2-NODES.md`.
+MIT © 2026 Kostiantyn Hrytsuk
