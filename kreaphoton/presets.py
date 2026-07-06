@@ -72,12 +72,25 @@ DEFAULT_RESOLUTION_ASPECT = "3:2"
 #     (a_latent,a_cond) magnitudes with a wider low/medium/high spread. ---
 VARIETY_LEVELS = {
     "off":    (0.00, 0.00),
-    "low":    (0.20, 0.15),   # V3: mutation-cap=0 OK; dose-response weak, see note above
-    "medium": (0.40, 0.30),   # V3: mutation-cap=0 OK; dose-response weak, see note above
-    "high":   (0.65, 0.50),   # V3: mutation-cap=0 OK; dose-response weak, see note above
+    "low":    (0.20, 0.15),   # texture/detail variation (see VARIETY_END note)
+    "medium": (0.40, 0.30),   # texture/detail variation
+    "high":   (0.65, 0.50),   # texture/detail variation
 }
 VARIETY_COND_TAPS = (7, 8, 9, 10)   # semantic taps per Rebalance/Enhancer community consensus
-VARIETY_END = 0.90                  # boundary sigma below which latent variety applies (M4)
+# 2026-07-06 FIX (0.90 -> 0.96): at 0.90 the variety split boundary lands at
+# sigma~0.87, inside the sigma~0.85-0.90 bf16 round-trip corruption zone flagged
+# in sampling.py's split-guard comment. At medium/high the strong perturbation
+# there produced a reproducible droplet/speckle artifact over the whole subject
+# (a pre-existing v1 bug the eta0-only guard did NOT catch - the corruption is in
+# the split noise_scaling round-trip, not eta0; the earlier "V3 mutation-cap OK"
+# note was generated before the preset freeze and did not reproduce it). 0.96
+# moves the split to sigma~0.955, above the zone: verified clean at seeds
+# 1001-1003, high level, while composition/identity are preserved (mutation-cap
+# holds) and the perturbation is applied earlier so variety is also MORE visible.
+# NOTE on scope: variety on krea2-turbo is a TEXTURE/DETAIL knob, not composition
+# - variance-preserving latent perturbation cannot move composition on this model
+# (proven 2026-07-06); for composition variety use a different seed or `blend`.
+VARIETY_END = 0.96                  # boundary sigma below which latent variety applies (M4)
 
 # --- Presets (Sampler simple node: seed / preset / variety) ---
 PRESETS = {
