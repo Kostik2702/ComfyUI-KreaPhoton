@@ -18,7 +18,10 @@ ALPHA = 2.718281828459045 ** MU        # e^1.15 = 3.15819...; kept as a literal-
                                         # constant so this module has zero torch/math
                                         # dependency surprises at import time.
 TIMESTEPS = 10000                      # ModelSamplingFlux table size (comfy/model_sampling.py:395)
-PLUNGE_SIGMA_FLOOR = 0.75              # M1 default; inert while every v1 preset has plunge=False
+PLUNGE_SIGMA_FLOOR = 0.75              # M1 default. ACTIVE: all turbo presets ship plunge=True
+                                        # (V2, 2026-07-05), so composition crystallizes at this
+                                        # floor's plunge readout; anything re-noised below 0.75
+                                        # (e.g. restart @ sigma_r=0.65) can only affect texture.
 
 
 def sigma_from_t(t: float, alpha: float) -> float:
