@@ -322,15 +322,76 @@ class KreaPhotonEmptyLatent:
         return ({"samples": latent},)
 
 
+# Aesthetic "style directive" prepended to the prompt. krea2's Qwen encoder responds
+# strongly to leading instruction text (measured: it shifts composition/subject/polish),
+# but is LITERAL - media/layout nouns (magazine, cover, snapshot, poster, photo, print)
+# render into the image as text/borders/covers. Presets therefore use mood/quality
+# ADJECTIVES only, never media nouns (KREA2-NODES prefix-sweep 2026-07-07).
+STYLE_DIRECTIVES = {
+    "off":         "",
+    "editorial":   "professionally styled, refined color grading, flattering soft studio lighting, ",
+    "cinematic":   "cinematic lighting, anamorphic shallow depth of field, dramatic filmic mood, ",
+    "natural":     "candid, natural available light, true-to-life, ",
+    "custom":      None,   # use custom_directive
+}
+
+_STYLE_TOOLTIP = ("Aesthetic directive prepended to the prompt (krea2 responds strongly to "
+                  "leading instruction text). off = faithful/literal (safest default). "
+                  "editorial / cinematic / natural = calibrated nudges. custom = use "
+                  "`custom_directive`. WARNING: krea2 renders media nouns literally - avoid "
+                  "'magazine', 'cover', 'snapshot', 'poster' (they leak as text/borders).")
+_CUSTOM_DIRECTIVE_TOOLTIP = ("Your own leading style directive (used only when style=custom). "
+                             "Use mood/quality adjectives, NOT media nouns - 'magazine cover' / "
+                             "'snapshot' render as literal text/frames in the image.")
+
+
+class KreaPhotonEncode:
+    """krea2-native text encode with an aesthetic style directive. Feeds the prompt
+    through the correct KREA2_TEMPLATE path (plain clip.tokenize, unlike
+    CLIPTextEncodeLumina2 which injects a foreign Lumina2 system prefix), optionally
+    prepending a calibrated style directive (KREA2-NODES prefix-sweep)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "clip": ("CLIP",),
+                "text": ("STRING", {"multiline": True, "dynamicPrompts": True}),
+                "style": (list(STYLE_DIRECTIVES.keys()), {"default": "off",
+                                                          "tooltip": _STYLE_TOOLTIP}),
+            },
+            "optional": {
+                "custom_directive": ("STRING", {"default": "", "multiline": True,
+                                                "tooltip": _CUSTOM_DIRECTIVE_TOOLTIP}),
+            },
+        }
+
+    RETURN_TYPES = ("CONDITIONING",)
+    FUNCTION = "encode"
+    CATEGORY = CATEGORY
+
+    def encode(self, clip, text, style, custom_directive=""):
+        if style == "custom":
+            directive = custom_directive.strip()
+            if directive and not directive.endswith((" ", ",", ".", ":", ";")):
+                directive += ", "
+        else:
+            directive = STYLE_DIRECTIVES.get(style) or ""
+        tokens = clip.tokenize(directive + text)
+        return (clip.encode_from_tokens_scheduled(tokens),)
+
+
 NODE_CLASS_MAPPINGS.update({
     "KreaPhotonSampler": KreaPhotonSampler,
     "KreaPhotonSamplerAdvanced": KreaPhotonSamplerAdvanced,
     "KreaPhotonScheduler": KreaPhotonScheduler,
     "KreaPhotonEmptyLatent": KreaPhotonEmptyLatent,
+    "KreaPhotonEncode": KreaPhotonEncode,
 })
 NODE_DISPLAY_NAME_MAPPINGS.update({
     "KreaPhotonSampler": "KreaPhoton Sampler",
     "KreaPhotonSamplerAdvanced": "KreaPhoton Sampler (Advanced)",
     "KreaPhotonScheduler": "KreaPhoton Scheduler",
     "KreaPhotonEmptyLatent": "KreaPhoton Empty Latent",
+    "KreaPhotonEncode": "KreaPhoton Encode",
 })
