@@ -11,7 +11,7 @@ from .presets import (DEFAULT_PRESET, DEFAULT_RESOLUTION_ASPECT, DEFAULT_RESOLUT
                       VARIETY_END, VARIETY_LEVELS)
 from .noise import slerp_noise
 from .sampling import run_sampling
-from .schedules import ALPHA, build_schedule
+from .schedules import ALPHA, build_schedule, refine_schedule
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
@@ -35,6 +35,13 @@ _BLEND_TOOLTIP = ("Composition blend toward seed_b (0 = off, pure seed; 1 = seed
                   "identity moves with composition on krea2 - a composition explorer "
                   "between two seeds, not fixed-identity variety. Needs seed_b set.")
 _SEED_B_TOOLTIP = "Second seed for the composition blend (see `blend`). Ignored when blend<=0."
+
+_DENOISE_TOOLTIP = ("Refine / img2img strength (standard KSampler denoise semantics). "
+                    "1.0 = OFF: normal txt2img from the connected latent (default). Below 1.0 "
+                    "REFINES the connected latent instead of generating from scratch - feed a "
+                    "VAE-encoded image into `latent_image`: 0.2-0.4 = polish/detail, 0.5-0.7 = "
+                    "enhance + vary. Uses a clean partial descent (restart/plunge/blend are "
+                    "full-txt2img-only and skipped).")
 
 
 def _blend_noise(model, latent_image, seed, seed_b, blend):
@@ -108,6 +115,8 @@ class KreaPhotonSampler:
                 "variety": (list(VARIETY_LEVELS.keys()), {"default": "off"}),
                 "preview_method": (PREVIEW_METHODS, {"default": "auto",
                                                      "tooltip": _PREVIEW_METHOD_TOOLTIP}),
+                "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                                      "tooltip": _DENOISE_TOOLTIP}),
             },
             "optional": {
                 "negative": ("CONDITIONING",),
@@ -129,13 +138,25 @@ class KreaPhotonSampler:
     CATEGORY = CATEGORY
 
     def sample(self, model, positive, latent_image, seed, preset, variety,
-              preview_method="auto", negative=None, clean_model=None, vae=None,
+              preview_method="auto", denoise=1.0, negative=None, clean_model=None, vae=None,
               seed_b=-1, blend=0.0):
         p = PRESETS[preset]
-        sigmas = build_schedule(p["n_steps"], alpha=p["alpha"], restart_frac=p["restart_frac"],
-                                sigma_r=p["sigma_r"], plunge=p["plunge"])
         a_latent, a_cond = VARIETY_LEVELS[variety]
-        noise = _blend_noise(model, latent_image, seed, seed_b, blend)
+        if denoise < 1.0:
+            # refine / img2img: partial clean descent on the input latent (feed a
+            # VAE-encoded image into latent_image). Fresh partial noise; restart/
+            # plunge and blend are full-txt2img-only and skipped here.
+            sigmas = refine_schedule(p["n_steps"], alpha=p["alpha"], denoise=denoise)
+            noise = None
+        else:
+            sigmas = build_schedule(p["n_steps"], alpha=p["alpha"], restart_frac=p["restart_frac"],
+                                    sigma_r=p["sigma_r"], plunge=p["plunge"])
+            noise = _blend_noise(model, latent_image, seed, seed_b, blend)
+
+        # refine (denoise<1) disables gated-eta: ancestral noise injected onto an
+        # already-formed image shows up as a speckle/dust artifact at denoise>=0.35
+        # (KREA2-NODES 2026-07-07). Full txt2img keeps the preset's eta0.
+        eta0 = 0.0 if denoise < 1.0 else p["eta0"]
 
         if negative is None:
             guidance_mode = "off"
@@ -154,7 +175,7 @@ class KreaPhotonSampler:
                 contraction=p["contraction"], per_channel_contraction=False,
                 manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
                 detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
-                eta0=p["eta0"], sigma_gate=p["sigma_gate"],
+                eta0=eta0, sigma_gate=p["sigma_gate"],
                 clean_model=clean_model, composition_end=0.85,
                 variety_a_latent=a_latent, variety_a_cond=a_cond, variety_seed=seed,
                 variety_end=VARIETY_END, variety_cond_taps=VARIETY_COND_TAPS,

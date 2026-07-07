@@ -92,6 +92,25 @@ def build_schedule(n_steps: int, alpha: float = ALPHA, restart_frac: float = 0.0
     return torch.tensor(sigs, dtype=torch.float32)
 
 
+def refine_schedule(n_steps: int, alpha: float = ALPHA, denoise: float = 1.0) -> torch.Tensor:
+    """Partial descent for img2img / refine (denoise < 1.0).
+
+    Oversample a PLAIN descent (no restart, no plunge - both are full-txt2img
+    detail-recovery tricks that fight a partial refine) at round(n_steps/denoise)
+    steps, then take the last n_steps+1 sigmas. This is the standard denoise-strength
+    truncation (comfy's own convention; parses cleanly through infer_segment_map,
+    which is explicitly written to treat a denoise<1 truncation as no-restart).
+
+    Returns exactly n_steps+1 sigmas descending to 0. denoise>=1.0 collapses to the
+    full plain descent (n_steps+1 values) - callers use build_schedule for the real
+    txt2img path and only reach here when denoise < 1.0.
+    """
+    d = max(1e-3, min(1.0, float(denoise)))
+    total = max(int(n_steps), int(round(n_steps / d)))
+    full = build_schedule(total, alpha=alpha, restart_frac=0.0, plunge=False)
+    return full[-(int(n_steps) + 1):]
+
+
 @dataclass
 class SegmentMap:
     """Restart/plunge boundary map inferred from a SIGMAS tensor (own or foreign).

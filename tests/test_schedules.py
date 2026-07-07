@@ -114,6 +114,27 @@ def main():
     assert seg_map_dup.restart_start is None and not seg_map_dup.ambiguous
     print("     duplicate-boundary array -> no false restart detected")
 
+    # --- (E) refine_schedule: partial clean descent for img2img (denoise<1) ---
+    print("[E] refine_schedule (img2img partial descent)")
+    n = 12
+    starts = {}
+    for d in (1.0, 0.7, 0.5, 0.3):
+        s = sch.refine_schedule(n, denoise=d)
+        assert s.shape[0] == n + 1, f"refine_schedule must return n_steps+1 sigmas (d={d})"
+        assert float(s[-1]) == 0.0, "refine schedule must end at 0"
+        assert torch.all(s[1:] < s[:-1]), "refine schedule must strictly descend (no restart/plunge)"
+        assert float(s[0]) <= 1.0 + 1e-6, "start sigma cannot exceed sigma_max"
+        starts[d] = float(s[0])
+        print("     denoise=%.1f  start_sigma=%.4f  (len=%d)" % (d, starts[d], s.shape[0]))
+    # lighter denoise -> lower start sigma (less noise injected = gentler refine)
+    assert starts[0.3] < starts[0.5] < starts[0.7] < starts[1.0], "start sigma must fall with denoise"
+    assert abs(starts[1.0] - 1.0) < 1e-6, "denoise=1.0 must equal the full plain descent (start==sigma_max)"
+    # denoise=1.0 refine_schedule == build_schedule plain descent, elementwise
+    d1 = (sch.refine_schedule(n, denoise=1.0).double()
+          - sch.build_schedule(n, restart_frac=0.0, plunge=False).double()).abs().max().item()
+    assert d1 < 1e-6, "denoise=1.0 must be identical to build_schedule(plain)"
+    print("     denoise=1.0 == build_schedule(plain): max diff %.3e" % d1)
+
     print("\ntest_schedules: ALL ASSERTS PASSED")
 
 
