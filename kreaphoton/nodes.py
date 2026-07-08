@@ -11,6 +11,7 @@ from .presets import (DEFAULT_PRESET, DEFAULT_RESOLUTION_ASPECT, DEFAULT_RESOLUT
                       VARIETY_END, VARIETY_LEVELS)
 from .noise import slerp_noise
 from .sampling import run_sampling
+from .save import KreaPhotonSaveImage
 from .schedules import ALPHA, build_schedule, refine_schedule
 
 NODE_CLASS_MAPPINGS = {}
@@ -387,6 +388,7 @@ NODE_CLASS_MAPPINGS.update({
     "KreaPhotonScheduler": KreaPhotonScheduler,
     "KreaPhotonEmptyLatent": KreaPhotonEmptyLatent,
     "KreaPhotonEncode": KreaPhotonEncode,
+    "KreaPhotonSaveImage": KreaPhotonSaveImage,
 })
 NODE_DISPLAY_NAME_MAPPINGS.update({
     "KreaPhotonSampler": "KreaPhoton Sampler",
@@ -394,4 +396,5 @@ NODE_DISPLAY_NAME_MAPPINGS.update({
     "KreaPhotonScheduler": "KreaPhoton Scheduler",
     "KreaPhotonEmptyLatent": "KreaPhoton Empty Latent",
     "KreaPhotonEncode": "KreaPhoton Encode",
+    "KreaPhotonSaveImage": "KreaPhoton Save Image",
 })

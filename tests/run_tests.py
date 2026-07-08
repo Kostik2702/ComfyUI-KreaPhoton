@@ -14,6 +14,7 @@ TESTS = [
     "test_noise.py",
     "test_variety.py",
     "test_sampling.py",
+    "test_save.py",
 ]
 
 
