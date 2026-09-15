@@ -534,6 +534,38 @@ def main():
     assert len(seen) == len(sig_asc) - 1 and seen[0] < seen[-1], "tiler receives each ascending sigma once"
     print("     round trip max err %.2e (8 steps) -> %.2e (16 steps); descending rejected; tiler/hook wired" % (err, err16))
 
+    # --- (20) v1.6: a noise_mask must never cross a phase-model split. comfy's
+    #          KSamplerX0Inpaint needs the SOURCE latent and the ORIGINAL noise in every
+    #          segment; segment 2+ hands over the mid-trajectory state and zero noise, so the
+    #          mask band becomes the noisy state (Face Detailer "confetti ring", 2026-09-15) ---
+    print("[20] run_sampling: noise_mask + split -> one segment on the longest phase")
+    runs = []
+
+    def spy_run_one(model, positive, negative, latent_dict, sigmas, **kw):
+        runs.append((model, len(sigmas) - 1, latent_dict.get("noise_mask") is not None))
+        return latent_dict
+    real_run_one = smp._run_one
+    smp._run_one = spy_run_one
+    try:
+        s8 = sch.refine_schedule(7, alpha=2.48, denoise=0.45)          # sigma0 0.658 > 0.65: 1 identity step + 6 texture
+        lat = {"samples": torch.zeros(1, 16, 1, 8, 8), "noise_mask": torch.ones(1, 1, 1, 8, 8)}
+        smp.run_sampling("identity", "pos", None, lat, s8, seed=1, texture_model="texture")
+        assert len(runs) == 1 and runs[0][0] == "texture" and runs[0][1] == 7 and runs[0][2], runs
+        runs.clear()
+        smp.run_sampling("identity", "pos", None, {"samples": torch.zeros(1, 16, 1, 8, 8)}, s8, seed=1,
+                         texture_model="texture")
+        assert len(runs) == 2 and [r[0] for r in runs] == ["identity", "texture"], runs   # no mask: split as before
+        runs.clear()
+        s_full = sch.build_schedule(8).tolist()
+        lat = {"samples": torch.zeros(1, 16, 1, 8, 8), "noise_mask": torch.ones(1, 1, 1, 8, 8)}
+        smp.run_sampling("identity", "pos", None, lat, torch.tensor(s_full), seed=1, clean_model="clean",
+                         texture_model="texture")
+        assert len(runs) == 1 and runs[0][1] == 8, runs
+        assert runs[0][0] in ("identity", "texture", "clean")
+    finally:
+        smp._run_one = real_run_one
+    print("     masked run stays one lifecycle (longest phase's model); unmasked split unchanged")
+
     print("\ntest_sampling: ALL ASSERTS PASSED")
 
 

@@ -14,10 +14,15 @@ Pass 2 starts from the pass-1 winner AT ITS GUIDE RESOLUTION (no round trip thro
 the crop size), so the detail built at 1024 feeds the 1536 pass. Only the final
 winner is resized down to the crop and pasted.
 
-Phase model: every preset pass starts below sigma 0.66 (refine_schedule at denoise
-<= 0.45), i.e. inside the plan's texture segment - the crop runs on the texture
-patcher exactly like Upscale v2 (identity- and texture-phase LoRAs act, a
-composition-only LoRA does not). Without a plan the model runs as is.
+Phase model: the crop pass runs as ONE lifecycle on the plan's texture patcher
+(identity- and texture-phase LoRAs act, a composition-only LoRA does not) - the
+pass lives at sigma <= ~0.66, texture territory, and a noise_mask cannot cross a
+phase split (comfy's inpaint blend needs the source latent and the original noise
+in every segment; a split hands segment 2 the noisy state, and the mask band
+decodes to a ring of coloured speckle - found 2026-09-15 on the owner's graph,
+where a composition+identity LoRA made the texture set differ from the identity
+set and denoise 0.45 started one step above 0.65). Without a plan the model runs
+as is.
 
 Module-level seams (_detect, _gate, _run_sampling, _run_inversion, _build_phase_models,
 _upscale) exist so tests can replace the heavy parts; the node calls them by name.
@@ -227,9 +232,12 @@ class KreaPhotonFaceDetailer:
                                              seed_step=int(c["retry_seed_step"]))
                     for ai, (d_a, seed_a) in enumerate(retries):
                         sigmas = refine_schedule(int(n_steps), alpha=alpha, denoise=float(d_a))
-                        run_model, texture_model = identity, plan_texture
-                        if plan_texture is not None and float(sigmas[0]) <= UPSCALE_TEXTURE_START:
-                            run_model, texture_model = plan_texture, None
+                        # The masked crop pass is ONE lifecycle on the plan's texture patcher
+                        # (the pass lives at sigma <= ~0.66, texture territory). Never a
+                        # phase split: comfy's inpaint blend needs the source latent + noise
+                        # in every segment - a split hands segment 2 the noisy state, the
+                        # mask band decodes to coloured speckle (confetti ring, 2026-09-15).
+                        run_model = plan_texture if plan_texture is not None else identity
                         latent_in = {"samples": z, "noise_mask": noise_mask}
                         add_noise = True
                         if int(c["invert"]):
@@ -248,7 +256,6 @@ class KreaPhotonFaceDetailer:
                             manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
                             detail_amount=float(c["detail_a"]), order=order,
                             eta0=0.0, sigma_gate=0.10,   # refine: ancestral noise = speckle (2026-07-07)
-                            texture_model=texture_model, texture_start=UPSCALE_TEXTURE_START,
                         )
                         cand = _decode_tiled(vae, out["samples"])[..., :3].clamp(0.0, 1.0)
                         sim = None

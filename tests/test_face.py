@@ -235,13 +235,11 @@ def test_node():
     out_img, out_mask, report = node.detail(model, "pos", img, _FakeVAE(), 5, "standard", 1)
     assert out_img.shape == img.shape and out_mask.shape == (1, 512, 768)
     assert len(calls) == 2, len(calls)                      # two passes, one attempt each
-    # phase-model rule (== Upscale v2): a pass starting inside the texture segment runs
-    # wholly on the texture patcher, otherwise identity + texture_model for the tail
+    # phase-model rule: the masked crop pass is ONE lifecycle on the plan's texture patcher,
+    # never a split (a noise_mask cannot cross a segment boundary - confetti ring 2026-09-15)
     for c in calls:
-        if float(c["sigmas"][0]) <= presets.UPSCALE_TEXTURE_START:
-            assert c["model"].name == "texture" and c["kw"]["texture_model"] is None, c["model"].name
-        else:
-            assert c["model"].name == "identity" and c["kw"]["texture_model"].name == "texture"
+        assert c["model"].name == "texture" and c["kw"].get("texture_model") is None, (c["model"].name, c["kw"])
+        assert c["latent"].get("noise_mask") is not None
     assert calls[0]["latent"]["samples"].shape[-2] == 1024 // 8, calls[0]["latent"]["samples"].shape
     assert calls[1]["latent"]["samples"].shape[-2] == 1536 // 8, calls[1]["latent"]["samples"].shape
     nm = calls[0]["latent"]["noise_mask"]

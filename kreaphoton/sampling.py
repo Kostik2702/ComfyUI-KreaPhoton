@@ -587,6 +587,19 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *, seed,
     # the SAME sigma_model sequence as one lifecycle (V16 F_clean validated).
     segments = plan_segments(sig_list, composition_end=composition_end, has_clean=clean_model is not None,
                              texture_start=texture_start, has_texture=texture_model is not None)
+    phase_models = {"composition": clean_model, "identity": model, "texture": texture_model}
+    if len(segments) > 1 and latent_dict.get("noise_mask") is not None:
+        # A noise_mask cannot cross a segment boundary: comfy's KSamplerX0Inpaint re-noises
+        # the unmasked band from the SOURCE latent with the ORIGINAL noise at every step
+        # and writes the source back into the band at the end - segment 2+ hands it the
+        # mid-trajectory state and zero noise instead, so the band decodes to coloured
+        # speckle (Face Detailer "confetti ring", 2026-09-15). Run the whole schedule on
+        # the model of the phase that covers most of it.
+        a, b, phase = max(segments, key=lambda s: (s[1] - s[0], -s[0]))
+        print("[KreaPhoton] noise_mask + phase split (%s): a masked run stays one lifecycle - whole schedule "
+              "on the %s model" % ("/".join(p for _, _, p in segments), phase))
+        model = phase_models[phase]
+        segments = [(0, len(sig_list) - 1, phase)]
     if len(segments) == 1:
         return _run_one(model, positive, negative, latent_dict, sigmas,
                         seed=seed, noise=noise, add_noise=add_noise,
@@ -594,7 +607,6 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *, seed,
                         variety_state="pending" if variety_idx is not None else "off",
                         coherence_jump=kw_jump, **vkw, **kw)
 
-    phase_models = {"composition": clean_model, "identity": model, "texture": texture_model}
     cur = latent_dict
     cur_noise, cur_add = noise, add_noise
     for k, (a, b, phase) in enumerate(segments):
