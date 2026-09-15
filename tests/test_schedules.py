@@ -135,6 +135,91 @@ def main():
     assert d1 < 1e-6, "denoise=1.0 must be identical to build_schedule(plain)"
     print("     denoise=1.0 == build_schedule(plain): max diff %.3e" % d1)
 
+    # --- (F) NFE contract for EVERY UI step count (audit F05): model calls == steps ---
+    print("[F] model_calls == steps for steps 1..24 x every preset restart/plunge combo")
+    combos = [(0.0, False), (0.25, True), (0.25, False), (0.20, False), (0.6, True)]
+    for n in range(1, 25):
+        for frac, plunge in combos:
+            s = sch.build_schedule(n, restart_frac=frac, sigma_r=0.65, plunge=plunge)
+            calls = sch.count_model_calls(s)
+            assert calls == n, f"steps={n} frac={frac} plunge={plunge}: {calls} model calls (sigmas {s.tolist()})"
+            assert float(s[0]) == 1.0 and float(s[-1]) == 0.0
+            sch.validate_sigmas(s)   # every own schedule passes the production validator
+    # restart is dropped below MIN_STEPS_FOR_RESTART, present at/above it
+    assert sch.infer_segment_map(sch.build_schedule(3, restart_frac=0.25, plunge=True)).restart_start is None
+    assert sch.infer_segment_map(sch.build_schedule(4, restart_frac=0.25, plunge=True)).restart_start is not None
+    print("     1..24 steps x 5 combos: exact; restart dropped below %d steps" % sch.MIN_STEPS_FOR_RESTART)
+
+    # --- (G) validate_sigmas: production boundary (audit F04) ---
+    print("[G] validate_sigmas accept/reject table")
+    ok_cases = {
+        "plain": sch.build_schedule(12),
+        "restart": sch.build_schedule(12, restart_frac=0.25, sigma_r=0.65, plunge=True),
+        "refine": sch.refine_schedule(12, denoise=0.4),
+        "partial (no final 0)": torch.tensor([1.0, 0.7, 0.4]),
+        "flat duplicate": torch.tensor([1.0, 0.5, 0.5, 0.0]),
+        "list input": [1.0, 0.5, 0.0],
+    }
+    for name, s in ok_cases.items():
+        out = sch.validate_sigmas(s)
+        assert torch.is_tensor(out) and out.ndim == 1, name
+    print("     accepted: %s" % ", ".join(ok_cases))
+    sch.validate_sigmas(torch.tensor([1.0, 0.75, 0.0, 0.85, 0.75, 0.0, 0.65, 0.3, 0.0]))   # self-refine + restart
+    bad_cases = {
+        "three jumps": (torch.tensor([1.0, 0.5, 0.0, 0.7, 0.0, 0.9, 0.0, 0.6, 0.0]), "ascending jumps"),
+        "NaN": (torch.tensor([1.0, float("nan"), 0.0]), "NaN"),
+        "Inf": (torch.tensor([1.0, float("inf"), 0.0]), "NaN/Inf"),
+        "negative": (torch.tensor([1.0, -0.1, 0.0]), "negative"),
+        "sigma>1 (EPS)": (torch.tensor([14.6, 1.0, 0.0]), "> 1.0"),
+        "starts at 0": (torch.tensor([0.0, 0.0]), "starts at 0"),
+        "2-D": (torch.zeros(2, 3), "1-D"),
+        "single": (torch.tensor([1.0]), "at least 2"),
+    }
+    for name, (s, needle) in bad_cases.items():
+        try:
+            sch.validate_sigmas(s)
+            raise AssertionError("%s must be rejected" % name)
+        except ValueError as e:
+            assert needle in str(e), "%s: message %r lacks %r" % (name, str(e), needle)
+    print("     rejected with naming errors: %s" % ", ".join(bad_cases))
+
+    # --- (H) resolution-aware shift (v1.4): canonical Krea 2 mu by token count ---
+    print("[H] alpha_for_latent (canonical dynamic shift)")
+    assert abs(sch.canonical_mu(256) - 0.5) < 1e-9
+    assert abs(sch.canonical_mu(6400) - 1.15) < 1e-9
+    assert abs(sch.canonical_mu(4096) - 0.906) < 1e-3, sch.canonical_mu(4096)
+    assert sch.canonical_mu(100) == 0.5 and sch.canonical_mu(10000) == 1.15
+    a_L = sch.alpha_for_latent(200, 136)          # 1088x1600 -> 6800 tokens -> capped at e^1.15
+    a_S = sch.alpha_for_latent(128, 128)          # 1024x1024 -> 4096 tokens
+    a_XS = sch.alpha_for_latent(64, 64)           # 512x512   -> 1024 tokens
+    assert abs(a_L - sch.ALPHA) < 1e-9, "L tier must keep the preset alpha (bit-identical schedules)"
+    assert abs(a_S - math.exp(0.906)) < 3e-3 and a_S < a_L
+    assert a_XS < a_S and a_XS >= math.exp(0.5) - 1e-9
+    assert torch.equal(sch.build_schedule(12, alpha=a_L), sch.build_schedule(12))
+    print("     L 1088x1600 -> alpha %.3f (unchanged) | S 1024^2 -> %.3f | 512^2 -> %.3f" % (a_L, a_S, a_XS))
+
+    # --- (I) self-refine pass (v1.4): second ascending jump, calls == n + refine_steps ---
+    print("[I] build_schedule(refine_steps=4, refine_sigma=0.85)")
+    base12 = sch.build_schedule(12, restart_frac=0.25, sigma_r=0.65, plunge=True)
+    sr = sch.build_schedule(12, restart_frac=0.25, sigma_r=0.65, plunge=True, refine_steps=4, refine_sigma=0.85)
+    s = sr.tolist()
+    jumps = [i for i in range(len(s) - 1) if s[i + 1] > s[i] + 1e-6]
+    assert len(jumps) == 2, jumps
+    assert sch.count_model_calls(sr) == 12 + 4
+    assert torch.equal(sr[:len(base12) - 4], base12[:len(base12) - 4]), "structure + first plunge unchanged"
+    j0 = jumps[0]
+    assert s[j0] == 0.0 and abs(s[j0 + 1] - 0.85) < 1e-6, "self-refine re-noises the plunge draft to refine_sigma"
+    seg = s[j0 + 1:jumps[1] + 1]
+    assert seg[-1] == 0.0 and abs(seg[-2] - sch.PLUNGE_SIGMA_FLOOR) < 1e-6, "refine descends to the floor then plunges"
+    assert all(seg[i + 1] < seg[i] for i in range(len(seg) - 1))
+    assert abs(s[jumps[1] + 1] - 0.65) < 1e-6 and s[-1] == 0.0, "restart segment follows unchanged"
+    assert torch.equal(sr[jumps[1] + 1:], base12[len(base12) - 4:])
+    sch.validate_sigmas(sr)
+    assert torch.equal(sch.build_schedule(12, restart_frac=0.25, sigma_r=0.65, plunge=True, refine_steps=0), base12)
+    one = sch.build_schedule(12, restart_frac=0.25, sigma_r=0.65, plunge=True, refine_steps=1, refine_sigma=0.85)
+    assert sch.count_model_calls(one) == 13
+    print("     2 jumps, 16 model calls, refine 0.85 -> 0.75 -> plunge, restart unchanged, refine_steps=0 bit-identical")
+
     print("\ntest_schedules: ALL ASSERTS PASSED")
 
 

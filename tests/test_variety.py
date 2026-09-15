@@ -162,6 +162,27 @@ def main():
     assert infl > 0.15, "additive form must visibly inflate std (M4[b2] precedent)"
     assert abs(corr_add - target) < 0.02
 
+    # --- (c) input guards (audit F07): foreign conditioning, bad taps, zeroed taps ---
+    print("[c] cond_tap_rotation guards")
+    try:
+        var.cond_tap_rotation(torch.randn(1, 8, 4096), taps, 0.3, seed=1)
+        raise AssertionError("foreign conditioning width must be rejected")
+    except ValueError as e:
+        assert "30720" in str(e) and "krea2" in str(e)
+    try:
+        var.cond_tap_rotation(cond, (7, 12), 0.3, seed=1)
+        raise AssertionError("tap 12 must be rejected")
+    except ValueError as e:
+        assert "out of range" in str(e)
+    zeroed = torch.zeros_like(cond)
+    out_z = var.cond_tap_rotation(zeroed, taps, 0.5, seed=1)
+    assert torch.equal(out_z, zeroed), "zeroed conditioning (ConditioningZeroOut) must pass through bit-exact, no NaN"
+    assert torch.isfinite(out_z).all()
+    # a=0 on a foreign width is still an exact no-op (guard only bites when rotating)
+    foreign = torch.randn(1, 8, 4096)
+    assert torch.equal(var.cond_tap_rotation(foreign, taps, 0.0, seed=1), foreign)
+    print("     wrong width / bad tap -> ValueError; zeroed cond bit-exact; a=0 no-op on anything")
+
     print("\ntest_variety: ALL ASSERTS PASSED")
 
 

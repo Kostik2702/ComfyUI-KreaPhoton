@@ -106,6 +106,18 @@ def cond_tap_rotation(cond: torch.Tensor, taps: tuple, a: float, seed: int) -> t
     if a <= 0.0:
         return out
 
+    # Input guards (audit F07): the tap slicing below is only meaningful on the
+    # krea2 packed layout; a foreign CONDITIONING (other CLIP type) must fail
+    # with a message naming the expectation, not silently rotate garbage.
+    if cond.ndim != 3 or cond.shape[-1] != N_TAPS * TAP_DIM:
+        raise ValueError(
+            f"KreaPhoton variety: expected krea2 conditioning of shape (B, seq, {N_TAPS}x{TAP_DIM}="
+            f"{N_TAPS * TAP_DIM}), got {tuple(cond.shape)} - load the text encoder with "
+            f"CLIPLoader type 'krea2' (or set variety to off / variety_a_cond=0)")
+    bad_taps = [k for k in taps if not (0 <= int(k) < N_TAPS)]
+    if bad_taps:
+        raise ValueError(f"KreaPhoton variety: tap indices {bad_taps} out of range 0..{N_TAPS - 1}")
+
     b = cond.shape[0]
     gen = torch.Generator(device="cpu").manual_seed(seed)
     for k in taps:
@@ -114,10 +126,15 @@ def cond_tap_rotation(cond: torch.Tensor, taps: tuple, a: float, seed: int) -> t
             v = cond[bi, :, sl].double()
             mu = v.mean()
             vc = (v - mu).reshape(-1)
+            vv = float(vc @ vc)
             g = torch.randn(vc.shape, generator=gen, dtype=torch.float64)
+            if vv < 1e-12:
+                # constant / zeroed tap (e.g. ConditioningZeroOut): nothing to
+                # rotate, and (g@vc)/(vc@vc) would be 0/0. Leave it bit-exact.
+                continue
             g = g - g.mean()
-            g = g - (g @ vc) / (vc @ vc) * vc          # exact orthogonalization vs vc
-            g = g * (vc.norm() / g.norm())              # band-energy match
+            g = g - (g @ vc) / vv * vc                  # exact orthogonalization vs vc
+            g = g * (vc.norm() / g.norm().clamp_min(1e-12))   # band-energy match
             vpc = (1.0 - a * a) ** 0.5 * vc + a * g
             out[bi, :, sl] = (vpc.reshape(v.shape) + mu).to(cond.dtype)
     return out

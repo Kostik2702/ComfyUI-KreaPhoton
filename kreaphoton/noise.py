@@ -9,11 +9,13 @@ tensor). MANIFOLD_STD/MEAN from presets.py therefore apply DIRECTLY here, no
 rescale through the Wan21 latent_format constants needed.
 
 Measured fact (research/results/E3_real.json, 8 real photographs through
-qwen_image_vae): the photo manifold's normalized std is ~0.467 globally
-(per-channel 0.31-0.50) - the sampler's stock unit-N(0,1) initial noise is
-~2.1x WIDER than the manifold it is meant to converge onto. contract_noise
-gives a knob to shrink it, strength=1.0 (stock, no-op) down to strength=0.47
-(full contraction to the measured manifold std).
+qwen_image_vae): the DATA latents' normalized std is ~0.467 globally
+(per-channel 0.31-0.50). Honest framing (audit F06, 2026-07-11): the flow prior
+was trained to start from UNIT Gaussian noise, so that number does not make
+unit noise "too wide" - contract_noise is an empirical initial-noise AMPLITUDE
+control (the same axis Z-Image Power Nodes call "intensity": <1 softer, more
+photographic, cleaner shadows, more inter-seed diversity at 0.70 per V5; >1
+more contrast/saturation). strength=1.0 is the stock no-op.
 """
 import torch
 
