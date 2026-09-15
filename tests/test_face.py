@@ -207,7 +207,8 @@ def test_node():
     calls = []
 
     def fake_run_sampling(model, positive, negative, latent_dict, sigmas, **kw):
-        calls.append({"model": model, "latent": latent_dict, "sigmas": sigmas, "kw": kw})
+        calls.append({"model": model, "positive": positive, "negative": negative,
+                      "latent": latent_dict, "sigmas": sigmas, "kw": kw})
         return {"samples": latent_dict["samples"]}
 
     def fake_build(model, loader=None, apply_lora=None):
@@ -223,7 +224,8 @@ def test_node():
     fdl._build_phase_models = fake_build
     fdl._detect = lambda image, **kw: (boxes, confs)
     fdl._upscale = lambda image, scale, upscale_model=None: torch.nn.functional.interpolate(
-        image.movedim(-1, 1), scale_factor=scale, mode="bilinear").movedim(1, -1)
+        image.movedim(-1, 1), size=(int(round(image.shape[1] * scale)), int(round(image.shape[2] * scale))),
+        mode="bilinear").movedim(1, -1)
     node = fdl.KreaPhotonFaceDetailer()
     model = _FakeModel({lp.PLAN_KEY: [{"lora_name": "a", "strength": 1.0, "phase": "identity"}]})
 
@@ -233,11 +235,19 @@ def test_node():
     out_img, out_mask, report = node.detail(model, "pos", img, _FakeVAE(), 5, "standard", 1)
     assert out_img.shape == img.shape and out_mask.shape == (1, 512, 768)
     assert len(calls) == 2, len(calls)                      # two passes, one attempt each
-    assert all(c["model"].name == "identity" for c in calls)
+    # phase-model rule (== Upscale v2): a pass starting inside the texture segment runs
+    # wholly on the texture patcher, otherwise identity + texture_model for the tail
+    for c in calls:
+        if float(c["sigmas"][0]) <= presets.UPSCALE_TEXTURE_START:
+            assert c["model"].name == "texture" and c["kw"]["texture_model"] is None, c["model"].name
+        else:
+            assert c["model"].name == "identity" and c["kw"]["texture_model"].name == "texture"
+    assert calls[0]["latent"]["samples"].shape[-2] == 1024 // 8, calls[0]["latent"]["samples"].shape
+    assert calls[1]["latent"]["samples"].shape[-2] == 1536 // 8, calls[1]["latent"]["samples"].shape
     nm = calls[0]["latent"]["noise_mask"]
     z = calls[0]["latent"]["samples"]
     assert nm.shape == (1, 1, 1, z.shape[-2], z.shape[-1]), (nm.shape, z.shape)
-    assert calls[1]["kw"].get("texture_model") is not None and calls[1]["kw"]["texture_model"].name == "texture"
+    assert float(nm.max()) == 1.0 and float(nm.min()) == 0.0
     assert "identity gate: OFF" in report and "1 faces skipped" in report, report
     assert float(out_mask.sum()) > 0.0
     # the face region changed, a far corner did not
@@ -255,15 +265,15 @@ def test_node():
     # face_positive replaces positive for the crop; negative passes through
     calls.clear()
     node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, negative="neg", face_positive="face_pos")
-    assert calls[0]["latent"] is not None
-    assert fdl._LAST_CALL_ARGS["positive"] == "face_pos" and fdl._LAST_CALL_ARGS["negative"] == "neg"
+    assert calls[0]["positive"] == "face_pos" and calls[0]["negative"] == "neg"
 
     # no plan -> the raw model reaches run_sampling
     calls.clear()
     node.detail(_FakeModel(name="raw"), "pos", img, _FakeVAE(), 5, "subtle", 1)
     assert calls[0]["model"].name == "raw"
 
-    # two faces
+    # two faces (gate passes first time)
+    fdl._gate = lambda: _FakeGate([0.9])
     calls.clear()
     _, out_mask, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 2)
     assert len(calls) == 2 and "face 1" in report and "face 2" in report, report

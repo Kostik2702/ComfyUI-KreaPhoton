@@ -13,8 +13,11 @@ TESTS = [
     "test_guidance.py",
     "test_noise.py",
     "test_variety.py",
+    "test_tiling.py",
     "test_sampling.py",
     "test_save.py",
+    "test_nodes.py",
+    "test_face.py",
 ]
 
 
