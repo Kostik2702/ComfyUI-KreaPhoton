@@ -41,7 +41,7 @@ optional (appended in this order; never reordered — `test_nodes.py` widget-ord
   against its largest face instead of the original crop.
 - `upscale_model` UPSCALE_MODEL — used to enlarge the crop before encoding
   (`nodes._upscale_pixels` already supports it); absent → lanczos.
-- `tune` STRING — `key=value, ...` overrides of preset fields (same parser idea as
+- `tune` STRING — JSON object overriding preset fields (same format as
   `upscale_v2.apply_tune_v2`); unknown key → ValueError naming the key.
 
 outputs
