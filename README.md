@@ -18,10 +18,15 @@ cycle), not copied from SD/SDXL folklore.
 
 | Node | Purpose |
 |---|---|
-| **KreaPhoton Sampler** | All-in-one: seed / preset / variety. Everything else computed from validated presets. |
-| **KreaPhoton Sampler (Advanced)** | Same engine, SIGMAS input, every parameter exposed. |
+| **KreaPhoton Sampler** | All-in-one: seed / preset / variety (+ `denoise` for refine). Everything else computed from validated presets. |
+| **KreaPhoton Sampler (Advanced)** | Same engine, SIGMAS input, every parameter exposed (+ `x0_extrapolation`, `variety_seed`). |
 | **KreaPhoton Scheduler** | SIGMAS generator with the restart segment encoded (see warning below). |
 | **KreaPhoton Empty Latent** | Photo aspect ratios / megapixel tiers for Krea2 (16-channel latent). |
+| **KreaPhoton Encode** | krea2-native text encode (plain `KREA2_TEMPLATE` path) with an optional calibrated style directive. |
+| **KreaPhoton LoRA Phase** | Attaches a LoRA to the conditioning as a comfy weight hook that is active only in one phase of the schedule (composition / identity / texture). Chain one per LoRA. |
+| **KreaPhoton Save Image** | Save with folder picker, timestamp+counter unique names, PNG/JPEG/WebP metadata. Local-only power-user feature (the folder browser has no path allowlist - do not expose a `--listen` server). |
+| **KreaPhoton Upscale** | Faithful tiled ×1.25–×2.0 upscale with the same Krea 2 model: latent tiles re-blended every step (no seams), back-projection to the source (the downscaled result *is* the source), presets only, optional SR-model base. |
+| **KreaPhoton Face Detailer** | YOLO face detection → the `max_faces` largest faces redrawn at 1024 → 1536 px with the same sampler on the LoRA plan's phase model, ArcFace identity gate with keep-best retry, feathered paste. Presets `subtle` / `standard` / `strong`. |
 
 ### KreaPhoton Sampler
 
@@ -33,10 +38,11 @@ Minimum knobs by design. Inputs:
 | `positive` | CONDITIONING | |
 | `latent_image` | LATENT | use KreaPhoton Empty Latent |
 | `seed` | INT | drives sampling, restart re-noise, ancestral RNG and variety |
-| `preset` | combo | `turbo/fast` (8 steps) / `turbo/balanced` (12, default) / `turbo/quality` (16, euler_2m) / `raw/experimental` (36) |
+| `preset` | combo | `turbo/fast` (8 steps) / `turbo/balanced` (12, default) / `turbo/quality` (16, euler_2m) / `turbo/candid` (16, euler_2m, texture push dialled back — documentary / lifestyle, "as the eye sees it") / `raw/experimental` (36) |
 | `variety` | combo | `off` / `low` / `medium` / `high` — inter-seed decorrelation, see Variety |
 | `preview_method` | combo | live per-step preview: `auto` / `latent2rgb` / `taesd` / `none` |
-| `negative` (opt) | CONDITIONING | enables the σ-window guidance (see Guidance) |
+| `denoise` | FLOAT | 1.0 = txt2img (default). Below 1.0 = refine / img2img of the connected latent on a clean partial descent: 0.2–0.4 polish, 0.5–0.7 enhance + vary (restart/plunge/blend/eta are txt2img-only and skipped) |
+| `negative` (opt) | CONDITIONING | Turbo presets: enables the σ-window guidance (see Guidance). `raw/experimental`: real full-trajectory CFG 3.5 always, with a zeroed unconditional when nothing is connected |
 | `clean_model` (opt) | MODEL | anti-mutation composition split (see clean_model) |
 | `vae` (opt) | VAE | connect to get the decoded result as a thumbnail on the node |
 | `seed_b` (opt) | INT | second seed for the composition blend (−1 = off) |
@@ -55,13 +61,228 @@ using measured per-channel manifold stats), guidance (`guidance_mode` off/flat/w
 same `preview_method` / `negative` / `clean_model` / `vae` / `seed_b` / `blend` as the
 simple node. Also exposes `variety_seed` — the variety realization seed decoupled from
 the generation seed (−1 = use the generation seed); fix the generation seed and vary this
-to explore variety realizations of the same base.
+to explore variety realizations of the same base — and `x0_extrapolation` (v1.3): a
+terminal x0-trajectory extrapolation weight (0 = off). At the last step the model's x0
+estimate is continued linearly past the last evaluation toward σ=0
+(`denoised + w·f·(denoised − previous denoised)`, `f = σ_last/(σ_prev − σ_last)`, capped
+at 2; exactly 1.0 on the calibrated restart tail; skipped on plunge steps). Same mechanism
+as the third-party *Krea 2 Turbo Preset Sampler*'s `zero_extrapolation`; sharper
+micro-detail / local contrast, uncalibrated on KreaPhoton grids — try 0.3–0.5.
+
+Every SIGMAS array is validated before any model is touched (finite, 1-D, values in
+[0, 1], at most one ascending jump); a malformed or foreign schedule fails with a message
+naming the offending indices instead of integrating a meaningless trajectory.
+
+v1.4 additions on the Advanced node (all off by default, experimental): `pag_scale` /
+`pag_lo` / `pag_hi` / `pag_blocks` — perturbed-attention guidance, a second conditional
+forward with identity self-attention in the chosen DiT blocks inside a σ-window,
+`denoised += scale·(cond − perturbed)`; +1 model call per step in the window. Measured on
+Krea 2 Turbo (merge checkpoint, 5 scenes): scale ≥ 1.0 produces sparkle artifacts,
+saturation and face distortion, ≤ 0.5 is benign but showed no anatomy benefit — keep it
+at 0 unless you are experimenting. `restart_enhance` (both samplers, needs `vae`) — at the
+restart boundary the plunge x0 is decoded, run through NVIDIA DLSS 5 Photoreal Enhance V2
+(the `ComfyUI-dlss-enhancer` pack must be installed), re-encoded and re-noised into the
+texture phase. Measured: the restart steps re-synthesise texture and the DLSS pass is
+practically invisible in the result — run DLSS after decoding instead.
+
+Resolution-aware shift (v1.4): Krea 2's canonical schedule shift is linear in the image
+token count (μ 0.5 at 256 tokens → 1.15 at 6400); ComfyUI pins 1.15. The simple sampler
+now uses the canonical α for the connected latent — the L/XL tiers (≥ 6400 tokens) are
+unchanged, a 1024² grid gets α = 2.47 instead of 3.16. The Scheduler does the same when
+its optional `latent` input is connected.
+
+### Coherence tools (`coherence` on the simple node)
+
+Two Power-Nodes-derived mechanisms, both pure sampling (no detector, no second model):
+
+- **`jump`** — a one-time jump-back on the first step at/below σ 0.93: the state is
+  rescaled by (1−σ_decl)/(1−σ) and the model is told σ_decl = σ + 0.19·(1−σ). That is
+  what comfy's noise-scaling round-trip does to Power Nodes' 0.920 → 0.935 stage boundary,
+  made explicit: the model sees the correct signal-to-noise ratio at 20 % less amplitude
+  than the declared σ implies and commits harder to structure on the composition step.
+  Free (no extra model call). Advanced: `coherence_jump` / `coherence_jump_sigma`.
+- **`self_refine`** — after the plunge draft, re-noise to σ 0.85 and descend 4 extra
+  steps to the plunge floor, plunge again, then the usual restart. The model re-decides
+  faces, bodies and clothing with the whole draft as a prior (0.85 ≈ img2img 0.6: layout
+  kept, incoherent detail re-rendered). +4 model calls. Scheduler: `refine_steps` /
+  `refine_sigma` (a second ascending jump in the SIGMAS; the validator accepts two).
+- `jump+self_refine` — both. `off` is bit-identical to v1.3.
+
+Measured (23 frames, int8 checkpoint + LoRA rig, one seed per cell): `self_refine` kept the
+layout in every scene and visibly repaired hands (potter's clay-mush hand → distinct fingers;
+a raised hand in a two-person LoRA scene), identity and wardrobe preserved, no artifacts, about
++25 % time. `jump` was subtle and harmless. Recommendation: `self_refine` for LoRA stacks,
+groups and hand-heavy scenes; leave `off` when the plain result is already fine.
+
+### KreaPhoton LoRA Phase
+
+Sits on the MODEL line like a LoRA loader: `model` → LoRA Phase (character LoRA,
+`identity`) → LoRA Phase (style LoRA, `texture`) → KreaPhoton sampler. It patches
+nothing itself; it records the LoRA, strength and phase in a plan the model carries, and
+the sampler expands the plan into phase models with comfy's ordinary LoRA patching — so
+it works on every checkpoint, including int8 / fp8-quantized ones (comfy weight hooks
+cannot patch those; that path was dropped). `phase`: `composition` (σ 1.0→0.85, layout /
+framing / pose), `identity` (σ 0.85→0, face / body / clothing — includes the texture
+phase), `texture` (σ 0.65→0, the restart segment: skin, fabric, grain),
+`composition+identity`, `all` (classic loader). Character LoRA → `identity` keeps the face
+without letting the LoRA steer the layout; style LoRA → `texture` adds its look without
+fighting the prompt's composition. Model-only: the text encoder is not patched. Other
+samplers see the unpatched model. Identical LoRA sets share one patcher, so a plan with a
+single identity-phase LoRA costs one extra re-patch, not two.
+
+### Phase models (`clean_model` / `texture_model`)
+
+The same mechanism, wired by hand: both samplers accept up to three models, one per
+schedule phase — `clean_model` for the composition phase (σ > 0.85), `model` for the
+identity phase, `texture_model` for the texture phase (the restart segment, σ ≤ 0.65;
+`texture_start` on the Advanced node). Build them with ordinary LoRA loaders; an
+explicitly connected phase model overrides the plan for that phase. Each phase switch
+costs one LoRA re-patch (a few seconds on a 12B model). The segments share one global
+detail-envelope index and one guider setup, so the split integrates the exact sigma
+sequence of a single run.
+
+Per-phase prompts (the Power-Nodes `positive_stg2/stg3` idea) need no extra input: build
+them with the stock `ConditioningSetTimestepRange` + `ConditioningCombine` nodes — the
+guider honours conditioning timestep ranges like any ComfyUI sampler. Cover the whole
+range, or a step with no active positive falls back to comfy's zeroed conditioning.
+
+### KreaPhoton Upscale
+
+Faithful tiled ×1.25–×2.0 upscale with the same Krea 2 Turbo checkpoint: a light
+diffusion refine adds real micro-texture and edge definition, and a source-consistency
+step guarantees that the result reproduces the source *exactly* when scaled back down —
+layout, tone, faces and objects cannot change. Calibrated on existing frames (21 in two surveys: hands, freckled faces, groups of three
+to five people, coins, phones, cards, watches, hair, screen text, JPEG sources, night
+scenes; see `docs/07` §11), not on prompts.
+
+| Input | Type | Notes |
+|---|---|---|
+| `model` | MODEL | Krea 2 Turbo; a LoRA Phase plan is honoured (identity / texture LoRAs apply, composition ones never do) |
+| `positive` | CONDITIONING | the frame's prompt, shared by every tile (measured: an empty prompt gives the same result — the source drives everything) |
+| `image` | IMAGE | a batch is processed one image at a time (seed + index) |
+| `vae` | VAE | the krea2 Wan 2.1 VAE |
+| `seed` | INT | refine noise |
+| `preset` | combo | `polish` (denoise 0.06, 4 steps: clean, slightly crisper) / `detail` (0.12, 6 — default: natural skin / fabric / hair micro-texture, sharper edges) / `strong` (0.25, 8: more model texture and grain; source artefacts get emphasised too) |
+| `scale` | FLOAT 1.25–2.0 | pixel upscale before the refine (1.5 and 2.0 calibrated). Target dims are rounded to a multiple of 16 px. No 1.0: under the source-consistency guarantee a same-size run is either a no-op or a rewrite (measured) |
+| `negative` (opt) | CONDITIONING | σ-window guidance like the Sampler, but every preset starts far below the window (σ 0.14–0.45) — no effect on Turbo today |
+| `upscale_model` (opt) | UPSCALE_MODEL | pixel base instead of Lanczos (its own factor, then resized to `scale`). Measured with 4xNomos8kSCHAT-L and 4xNomos8kDAT: about twice the edge sharpness of the Lanczos base (Laplacian 3.2–3.8× vs 1.9× Lanczos-relative), the SR models' waxy / painted look is replaced by the diffusion's natural skin, but a source artefact such as crosshatch skin gets sharper too; +55–75 s per 1.7 MP frame on an RTX 5090 |
+| `tune` (opt) | STRING | calibration override (JSON), leave empty — see the tooltip |
+
+Output: `IMAGE`.
+
+How it works: the image is upscaled (Lanczos or the model), encoded once with the tiled
+VAE, and the ordinary KreaPhoton refine schedule runs on the **whole** latent. Every
+model call cuts the state into overlapping 1024 px tiles (128 px feathered overlap),
+runs them in batches of 4 with the shared prompt and merges the x0 predictions — the
+tiles are re-blended at every step, so seams cannot form (MultiDiffusion /
+Mixture-of-Diffusers idea, done inside the sampler loop). One tiled decode, then
+iterated back-projection: `result += Up(source − Down(result))`, five passes with an
+antialiased `Down` (a plain area/box downscale bins unevenly at ×1.5 and left a fine grid on
+skin — measured on the second survey), so the downscaled result matches the source to
+within the PNG rounding. Only the detail the model added
+below the source scale survives. Gated-eta, the detail nudge, restart / plunge / blend /
+coherence are all off (each was measured to push texture or rewrite content here).
+
+What the calibration found (2026-09-13, native-resolution crops on seven V17 frames):
+any denoise of 0.20 or more — on tiles or on one whole-image tile, with any prompt,
+sampler order, contraction or nudge — rewrote the picture: clay grain became a smooth
+glove with a fine mesh texture and the tone drifted several levels. The latent
+low-frequency anchor of the original design helped only partially (kept in `tiling.py`,
+reachable through `tune`, off in every preset). Back-projection fixed it outright, and
+with it the useful denoise band is 0.04–0.25. Consequence, stated plainly: **this node
+sharpens and re-textures, it does not repair geometry** — a deformed watch stays a
+deformed watch, because the denoise that could re-draw it rewrites the whole frame. A
+"repair" mode that locked the source on a coarser grid (2 source px) was measured worse
+(smeared edges, amplified crosshatch, waxy freckles) and is not offered.
+
+Cost on an RTX 5090, ×2 of a 1088×1600 frame: `polish` ≈ 17–22 s, `detail` ≈ 21–29 s,
+`strong` ≈ 27–38 s (models already loaded); add the SR model's time when one is
+connected. VRAM: the batch of four 1024² tiles fits with room to spare.
+
+### KreaPhoton Upscale v2
+
+The same faithful refine as v1 with three mechanisms added and measured on the same frames
+(`docs/07` §12), shipped as a separate node so v1 stays as calibrated:
+
+- **Empty-tile skipping** — tiles whose source carries no detail (bokeh, night sky, plain
+  walls; absolute luma-Laplacian activity below a threshold at the tile's 90th percentile)
+  get no model call and take the source latent instead. Measured identical output with 10–25 %
+  fewer tile forwards on the calibration frames; the log line on the console reports the count.
+- **Per-step grid shift** — the interior tiles move by a seeded random offset inside the
+  grid's slack at every model call (SpotDiffusion idea), so no blend band sits at a fixed
+  position; overlap 64 px instead of 128, same tile count.
+- **Noise inversion** (off by default, `tune` `{"invert_steps": n_steps-1}`) — the source
+  latent is first walked *up* the rectified flow on the descent grid so the descent starts
+  from the source's own noise instead of a fresh draw. Measured: +0.2–0.3 dB and no visible
+  difference at twice the model calls, because the back-projection already pins the result
+  to the source. Kept as an option, not a default.
+
+Presets `polish` 0.10 / 6, `detail` 0.20 / 8, `strong` 0.35 / 10 (contraction 1.0). Same
+inputs and `tune` override as v1 plus `invert_steps`, `skip`, `shift`, `start_noise`.
+
+### KreaPhoton Face Detailer
+
+IMAGE → IMAGE, after the sampler or the upscaler. Finds faces (ultralytics YOLO
+`face_yolov8m.pt`), redraws the `max_faces` largest ones at guide resolution with the
+KreaPhoton sampler, measures the result's identity against the original face (ArcFace),
+retries when it drifted, and pastes the winner back through a feathered ellipse.
+
+Inputs: `model` (may carry a LoRA Phase plan), `positive`, `image`, `vae`, `seed`, `preset`,
+`max_faces` (1–8, largest bbox first; faces under 48 px are skipped). Optional: `negative`
+(nothing at cfg 1), `face_positive` — a conditioning for the crop only (**put the character
+LoRA trigger here** plus "close-up portrait, natural skin texture"; not connected → `positive`
+is used, and the report reminds you when a plan is present), `reference_image` — a photo of the
+character; identity is then measured against it and the original face is kept if the redraw
+loses likeness, `upscale_model` — SR model to enlarge the crop (else lanczos), `tune` — JSON
+overrides. Outputs: `image`, `mask` (union of the pasted faces, for chaining), `report`
+(per face: bbox, every attempt's denoise / seed / id_sim, the verdict; also printed to the
+console).
+
+Per face, per pass: square crop of `2.0 ×` the bbox (aligned to 16 px) → resized so its long
+side is the pass's guide → VAE encode → `refine_schedule(n_steps, denoise)` with an elliptic
+`noise_mask` (bbox dilated 10 %, 6 % feather) → decode → ArcFace cosine to the reference.
+Below `id_threshold` the pass is retried with `denoise − 0.05` and `seed + 1000` (up to 3
+attempts); the attempt with the highest similarity wins, never a worse one. Pass 2 starts from
+the pass-1 winner at its full guide resolution, so the detail built at 1024 feeds 1536; only the
+final winner is resized down to the crop and pasted.
+
+**LoRA likeness.** Every preset pass starts below σ 0.66 (`refine_schedule` at denoise ≤ 0.45),
+i.e. inside the plan's texture segment: the crop runs on the plan's texture patcher exactly as
+Upscale v2 does — a character LoRA in `identity` or `all`, and a style LoRA in `texture`, act on
+the face; a `composition`-only LoRA does not. Without a plan the model runs as connected.
+
+Presets (`guide / denoise / steps` per pass, then `id_threshold`):
+
+| preset | pass 1 | pass 2 | id_threshold | use |
+|---|---|---|---|---|
+| `subtle` | 1024 / 0.25 / 6 | — | 0.70 | portraits, LoRA identity first |
+| `standard` | 1024 / 0.35 / 6 | 1536 / 0.15 / 6 | 0.65 | default; skin texture on pass 2 |
+| `strong` | 1024 / 0.45 / 7 | 1536 / 0.20 / 6 | 0.60 | small faces on full-body frames |
+
+Steps follow the effective-step rule of the Impact Pack measurement on krea2 (18 × 0.35 ≈ 6
+effective ↔ our 6 steps at denoise 0.35 — `refine_schedule` oversamples the descent at
+`n_steps / denoise`). **Honestly labeled: the numbers are derived from that Impact Pack
+measurement (2026-09-01) and are not yet validated on the KreaPhoton sampler.**
+
+`tune` keys: `crop_factor`, `bbox_threshold` (0.45; 0.6 details the subject only),
+`min_face_px`, `feather`, `dilation`, `retry_max`, `retry_denoise_step`, `retry_seed_step`,
+`sampler`, `guidance`, `detail_a`, `invert` (1 = inversion-anchored refine, the Upscale v2
+mechanism, unmeasured on faces), `id_threshold`, `guide1` / `denoise1` / `steps1`,
+`guide2` / `denoise2` / `steps2` (`guide2: 0` drops pass 2).
+
+Models and packages: `ultralytics` + `models/ultralytics/bbox/face_yolov8m.pt` are required
+(the Impact Subpack installs both; otherwise `pip install ultralytics` and download the
+detector from `huggingface.co/Bingsu/adetailer`). `insightface` + `onnxruntime` +
+`models/insightface/models/buffalo_l/` are optional — without them the identity gate is OFF
+(one attempt per pass, the report says so). The gate runs on CPU: ≈1.2 s per embedding on a
+desktop CPU, i.e. ≈4 s for the usual one face / two passes / no retry.
 
 ### KreaPhoton Scheduler
 
 `steps`, `alpha` (schedule steepness; default 3.158 = e^1.15, the stock Krea2
 `ModelSamplingFlux` shift — verified equivalent to live `calculate_sigmas` within 1e-6),
-`restart_frac`, `sigma_r`, `plunge` → SIGMAS.
+`restart_frac`, `sigma_r`, `plunge` → SIGMAS. Model calls always equal `steps` (the restart
+segment is dropped below 4 steps, a plunge needs 2 structure points).
 
 ⚠️ **A restart schedule encodes one ascending σ-jump.** The stock `SamplerCustom` /
 k-diffusion samplers do not understand ascending sigmas — feed KreaPhoton SIGMAS only
@@ -117,13 +338,27 @@ is assembled manually, mirroring `SamplerCustomAdvanced`):
   manifold (`contraction=0.70`, measured from real photographs through the VAE:
   global σ=0.4666). Cleaner shadows with *more* inter-seed diversity, not less.
   Advanced node can use measured per-channel std/mean instead of the scalar.
-- **Two-axis seed variety (M4, V3)** — at a σ-boundary (default 0.90): low-frequency
-  FFT band re-composition of the latent (AC-only — Wan21 channels are not zero-mean)
-  + rotation of semantic conditioning taps (7–10) of the packed 30720-dim Krea2 cond.
-  Mutation-cap validated: no identity/pose/composition breaks at any level.
+- **Two-axis seed variety (M4, V3)** — at a σ-boundary (default 0.96, i.e. the third
+  model call): low-frequency FFT band re-composition of the latent (AC-only — Wan21
+  channels are not zero-mean) + rotation of semantic conditioning taps (7–10) of the
+  packed 30720-dim Krea2 cond. Mutation-cap validated: no identity/pose/composition
+  breaks at any level. **What it moves:** texture / micro-detail (skin, hair, fabric
+  realization) at a fixed composition — on this model a variance-preserving latent
+  perturbation cannot move layout (measured: ≤2% of a seed change's composition
+  authority even at the top of the trajectory). Composition variety = a different seed
+  or `blend`. Since v1.3 both axes are applied *inside* the single sampler lifecycle
+  (conditioning switched per step by the guider), so the validated gated eta stays on
+  and there is no latent round-trip between segments. The latent axis re-composes only
+  the **noise component** of the state, `x = (1−σ)·x̂₀ + σ·ε` with `x̂₀` the model's
+  previous prediction: re-composing the whole state made its low frequencies disagree
+  with the committed structure, which the guidance window amplified into glowing blobs
+  on some seeds (found and fixed 2026-09-07).
 - **clean_model split (anti-mutation)** — optional: composition phase (σ > 0.85) runs
-  on a clean checkpoint, the LoRA identity/detail phase on `model`. ZPhoton-proven
-  pattern; unvalidated on Krea2 LoRA stacks yet.
+  on a clean checkpoint, the LoRA identity/detail phase on `model`. ZPhoton pattern. The
+  two segments now share one global detail-envelope index, so the split integrates the
+  exact sigma sequence of a single run; gated eta stays on. Smoke-validated on a 4-LoRA
+  Krea2 stack (character LoRA @1.0) at two seeds — identity, hands and clothing intact.
+  Whether it *reduces* LoRA mutation on Krea2 is not measured yet.
 
 ### Previews
 
@@ -155,20 +390,32 @@ fixed-identity variety control. `blend = 0` (default) is a bit-exact no-op.
 
 ## Presets (all values validated or honestly labeled)
 
-| | fast | balanced (default) | quality | raw/experimental |
-|---|---|---|---|---|
-| steps | 8 | 12 | 16 | 36 |
-| sampler | euler | euler | euler_2m (AB2) | euler_2m |
-| restart `frac` / `σ_r` / plunge | 0.25 / 0.65 / on | 0.25 / 0.65 / on | 0.25 / 0.65 / on | 0.20 / 0.45 / off |
-| detail | 0.50 | 0.60 | 0.70 | 0.50 |
-| eta0 / σ_gate | 1.0 / 0.10 | 1.0 / 0.10 | 1.0 / 0.10 | 1.0 / 0.10 |
-| contraction | 0.70 | 0.70 | 0.70 | 1.00 (uncalibrated) |
+| | fast | balanced (default) | quality | candid | raw/experimental |
+|---|---|---|---|---|---|
+| steps | 8 | 12 | 16 | 16 | 36 |
+| sampler | euler | euler | euler_2m (AB2) | euler_2m (AB2) | euler_2m |
+| restart `frac` / `σ_r` / plunge | 0.25 / 0.65 / on | 0.25 / 0.65 / on | 0.25 / 0.65 / on | 0.25 / 0.65 / on | 0.20 / 0.45 / off |
+| detail | 0.50 | 0.60 | 0.70 | 0.30 | 0.50 |
+| eta0 / σ_gate | 1.0 / 0.10 | 1.0 / 0.10 | 1.0 / 0.10 | 1.0 / 0.10 | 1.0 / 0.10 |
+| contraction | 0.70 | 0.70 | 0.70 | 0.85 | 1.00 (uncalibrated) |
+| guidance | window Δ1.25 (with negative) | window Δ1.25 (with negative) | window Δ1.25 (with negative) | window Δ1.25 (with negative) | flat CFG 3.5 always |
+| x0_extrapolation | 0 | 0 | 0 | 0 | 0 |
 
-`σ_r=0.65`, `plunge`, `eta0=1.0`, `contraction=0.70`, `delta=1.25` are V-protocol
-validated on real generations (pre-registered seeds/cells/accept-rules — no p-hacking);
-`detail_a` values are design hypotheses from the M2 working range, labeled as such in
-`presets.py`. `raw/experimental` targets the non-distilled RAW mode (real CFG 3.5) and
-is largely unexplored.
+`turbo/candid` is the quality grid with the texture push dialled back (detail 0.30,
+noise amplitude 0.85). On a 12-scene set (cinematic, documentary, lifestyle, groups of
+3–5, hands, night interiors, action, landscape) plus a 6-frame LoRA story it read
+consistently a little softer and more natural than `quality` in hard light — skin, wet
+fabric, hair — with the same structure, hands and prompt adherence. The difference is
+subtle: most "hyper-detail" in Krea2 output comes from prompt words (pores, texture,
+detailed skin) and polished LoRAs, not from the sampler.
+
+`σ_r=0.65`, `plunge`, `eta0=1.0`, `contraction=0.70`, `delta=1.25` were selected by the
+V-protocol on real generations (pre-registered cells and accept rules) — on a narrow
+domain: three prompts, seeds 1001–1003, the official Turbo checkpoint. `detail_a` values
+are design hypotheses from the M2 working range, labeled as such in `presets.py`;
+`contraction` is an empirical aesthetic control (cleaner shadows, more inter-seed
+diversity at 0.70), not a "correct manifold" — the flow prior expects unit noise.
+`raw/experimental` targets the non-distilled RAW mode and is largely unexplored.
 
 ---
 
@@ -179,7 +426,9 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/Kostik2702/ComfyUI-KreaPhoton.git
 ```
 
-Restart ComfyUI. No extra Python dependencies — torch and comfy only.
+Restart ComfyUI. No extra Python dependencies for the samplers and upscalers — torch and
+comfy only. The Face Detailer needs `ultralytics` (+ `face_yolov8m.pt`) and, for the identity
+gate, `insightface` + `onnxruntime` (+ `buffalo_l`) — see its section.
 
 Requirements: ComfyUI (0.2x, tested on 0.26) + a Krea 2 Turbo checkpoint
 (Wan21 16-channel latent family).
@@ -188,29 +437,95 @@ Requirements: ComfyUI (0.2x, tested on 0.26) + a Krea 2 Turbo checkpoint
 
 ## Known limitations
 
-- **eta0 is auto-disabled whenever a segment split occurs** (variety ≠ off or
-  clean_model connected). Ancestral stepping combined with any split produced a
-  reproducible speckle/mosaic artifact (isolated to the split round-trip mechanism,
-  suspected bf16 error amplification through 1/(1−σ_boundary); under investigation).
-  A safety guard silently forces eta0=0 in that combination so a broken image is
-  never shipped.
-- Variety dose-response is weak/non-monotonic beyond `low` (V3 open finding): the
-  off→low jump captures most of the decorrelation; a magnitude re-sweep is planned.
+- **Variety + negative share a hallucination budget.** With the latent variety axis
+  active, the guidance window runs at `delta · (1 − 0.45·a_latent)` (high → 0.88,
+  medium → 1.02). Measured on a merge checkpoint: at the full Δ=1.25 one seed in six
+  grew a glowing / mesh region; at the reduced Δ (or at medium) the same seeds are
+  clean. The Advanced node applies the same rule to its explicit `delta`.
+- Variety is a texture/detail knob, not a composition knob (measured, see above). Level
+  dose-response at the 0.96 boundary has been checked for artifacts and mutation-cap,
+  not re-swept for monotonic strength.
+- `guidance_rescale` (Advanced) is a standard CFG-rescale, exposed as an option; it is
+  not part of any preset and was not needed once the budget rule was in place.
+- `x0_extrapolation` and `detail_a` values are uncalibrated / design hypotheses.
 - `raw/experimental` preset: schedule steepness for the dynamic-μ RAW canon is
   uncalibrated.
 - Restart SIGMAS are KreaPhoton-only (ascending jump, see Scheduler warning).
+- `KreaPhoton Upscale` cannot repair geometry: it is source-consistent by construction,
+  so a deformed hand or watch in the source stays deformed (sharper). Any denoise that
+  could re-draw it (≥ 0.35 here) was measured to rewrite the whole frame.
+- The validation domain is narrow (3 prompts × 3 seeds × official Turbo). Faces of
+  different ages/skin tones, groups, hands, text, night/interior scenes, LoRA stacks
+  and quantized checkpoints are not covered by the evidence base.
 
 ## Testing
 
 Plain-assert test suite (`tests/run_tests.py`, no pytest dependency — runs under the
-ComfyUI embedded interpreter). Tests assert invariants, not literal preset values:
-schedule equivalence to stock `calculate_sigmas` at features-off, restart variance
-balance, NFE Σ-batch-dim invariant of the guidance window, bit-exactness of untouched
-conditioning taps, `corr(lf′, lf) = √(1−a²)` for the LF re-composition.
+ComfyUI embedded interpreter, 8 files). Tests assert invariants, not literal preset
+values: schedule equivalence to stock `calculate_sigmas` at features-off, model calls
+== steps for every step count, SIGMAS validation accept/reject table, restart variance
+balance, guidance window exactness + variety cond switch, bit-exactness of untouched
+conditioning taps, `corr(lf′, lf) = √(1−a²)` for the LF re-composition, in-loop
+variety == `lf_recompose` of the boundary state, terminal extrapolation formula, and
+the preset → `run_sampling` contract (RAW CFG, INPUT_TYPES backward compatibility).
 
 ```sh
-python tests/run_tests.py
+"<ComfyUI>/python_embeded/python.exe" tests/run_tests.py
 ```
+
+## Changelog
+
+**1.6.0**
+- `KreaPhoton Face Detailer` node (`face_detailer.py`, `face_geometry.py`, `face_detect.py`):
+  YOLO face detection, `max_faces` largest faces redrawn per preset (`subtle` / `standard` /
+  `strong`, two passes 1024 → 1536) with the KreaPhoton sampler on the LoRA plan's phase
+  model, elliptic noise mask, ArcFace identity gate with keep-best retry, optional
+  `reference_image`, `face_positive`, SR-model crop enlarge, `tune`; `mask` and `report`
+  outputs. Presets derived from the Impact Pack krea2 measurement, labeled unvalidated.
+- `tests/test_face.py` (9 test files now).
+
+**1.5.0**
+- `KreaPhoton Upscale` node: faithful tiled refine ×1.25–×2.0 on the same checkpoint —
+  latent tiles re-blended every step inside the sampler loop, post-decode
+  back-projection to the source, presets `polish` / `detail` / `strong`, optional SR
+  model base, LoRA Phase plans honoured. Calibrated on existing frames (docs/07 §11).
+- Sampler loop: optional `tiler` / `x0_hook` (both `None` = bit-exact v1.4 behaviour).
+- New module `tiling.py` + `tests/test_tiling.py` (8 test files now).
+- `KreaPhoton Upscale v2` node (`upscale_v2.py`): empty-tile skipping, per-step grid shift,
+  optional noise inversion (`sampling.run_inversion`); measured, see README section.
+
+**1.4.0** (experimental features, each behind an off-by-default switch)
+- Phase models: `texture_model` input (restart / texture phase) next to `clean_model`
+  (composition) — LoRA phase scheduling that works on quantized checkpoints.
+- `KreaPhoton LoRA Phase` node: LoRA active only in one schedule phase (comfy weight hooks
+  with σ keyframes; bf16 checkpoints only).
+- Perturbed-attention guidance on the Advanced node (`pag_*`).
+- `restart_enhance`: DLSS 5 Photoreal Enhance V2 at the restart boundary (needs the
+  `ComfyUI-dlss-enhancer` pack and `vae`).
+- Resolution-aware schedule shift (canonical Krea 2 μ by token count); L/XL unchanged.
+- Coherence tools: `jump` (one-time jump-back) and `self_refine` (second descent from the
+  plunge draft) — simple-node combo `coherence`, Scheduler `refine_steps`.
+- `turbo/candid` preset.
+
+**1.3.0**
+- **Root cause of the "split speckle / mosaic / droplets" found and fixed**: a segment
+  split (old variety split, `clean_model`) restarted the detail-envelope progress at
+  zero, so the restart steps were evaluated at a far lower σ than the state actually
+  had (σ̂≈0.52 for σ=0.65) and the model under-removed its own re-noise; the leftover
+  decoded as coloured confetti. It was never bf16 or the noise-scaling round-trip. The
+  envelope now uses the global step index; the `eta0=0` guard is gone.
+- Variety runs inside one sampler lifecycle (no split, no latent round-trip, gated eta
+  kept on) and re-composes only the noise component of the state.
+- Variety and the guidance window share a hallucination budget (`delta` scaled by the
+  latent variety amplitude).
+- `raw/experimental` really runs full-trajectory CFG 3.5 (the preset's `cfg` was never
+  read before).
+- SIGMAS validation on every sampler run; Scheduler model calls == steps for all N ≥ 1.
+- Numerical guards: degenerate guidance windows, foreign/zeroed conditioning in variety,
+  clear errors for non-Krea2 latents.
+- New Advanced knobs: `x0_extrapolation` (terminal x0-trajectory extrapolation),
+  `guidance_rescale` (CFG-rescale on guided steps), `contraction` range up to 1.5.
+- README/pyproject synced with the shipped nodes (6 nodes, version 1.3.0).
 
 ## License
 

@@ -15,7 +15,8 @@ the plan — the LoRA's likeness, not a generic face. Identity is measured (ArcF
 assumed.
 
 Non-goals (v1): hands, SAM segmentation masks, per-face prompts, video/batch
-temporal consistency, GPU insightface (CPU ORT is enough: ~0.1 s per face).
+temporal consistency, GPU insightface (CPU ORT, detection+recognition modules only:
+measured 1.1-1.4 s per embedding on this machine, 2026-09-15).
 
 ## 2. Node interface
 
@@ -142,8 +143,8 @@ Same as §4 but the crop latent is first inverted with `sampling.run_inversion` 
 ## 6. Identity gate
 
 - Backend: insightface `FaceAnalysis(name="buffalo_l", root=<models/insightface>,
-  providers=["CPUExecutionProvider"])`, `det_size=(640, 640)`, loaded lazily once per
-  process and cached. Root resolved via `folder_paths.models_dir` + `insightface`.
+  providers=["CPUExecutionProvider"], allowed_modules=["detection", "recognition"])`,
+  `det_size=(640, 640)`, loaded lazily once per process and cached. Root resolved via `folder_paths.models_dir` + `insightface`.
 - Embedding of a crop = normed embedding of the largest detected face in that crop;
   no face detected in a candidate → `sim = 0.0` (a destroyed face is the worst case,
   same "empty detection = 0" rule as the KleinPhoto retry spec).
@@ -213,6 +214,8 @@ with and without a character LoRA in the plan.
 - `noise_mask` blending in comfy's `KSamplerX0Inpaint` blends `latent_image` per step —
   inside the feather band the model sees a mix; feather 6% is the Impact default
   region; if seams appear, `feather` is a tune key.
-- ArcFace on CPU: buffalo_l ≈ 60–120 ms per embedding; ≤ 3 attempts × 2 passes × 8
-  faces worst case ≈ 6 s — acceptable next to the sampling cost.
+- ArcFace on CPU: buffalo_l measured 1.1–1.4 s per embedding (detection+recognition
+  only; all modules 3.3 s); ≤ 3 attempts × 2 passes × 8 faces worst case ≈ 60 s, the
+  usual 1 face / 2 passes / 1 attempt ≈ 4 s incl. the reference embedding — acceptable
+  next to the sampling cost, and the gate is skipped entirely when insightface is absent.
 - ultralytics import time (~1 s) is paid once per process, lazily on first run.

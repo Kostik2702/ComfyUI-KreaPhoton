@@ -120,7 +120,10 @@ class ArcFaceGate:
             pack_dir = os.path.join(root, "models", pack)
             if not os.path.isdir(pack_dir):
                 raise RuntimeError("model pack %s not found at %s" % (pack, pack_dir))
-            app = FaceAnalysis(name=pack, root=root, providers=["CPUExecutionProvider"])
+            # detection + recognition only: the landmark / genderage heads triple the
+            # CPU time (3.3 s -> 1.2 s per embedding, measured 2026-09-15) and add nothing
+            app = FaceAnalysis(name=pack, root=root, providers=["CPUExecutionProvider"],
+                               allowed_modules=["detection", "recognition"])
             app.prepare(ctx_id=-1, det_size=(640, 640))
             self._app = app
             self.available = True
