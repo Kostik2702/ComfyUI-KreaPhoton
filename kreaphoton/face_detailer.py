@@ -221,7 +221,7 @@ class KreaPhotonFaceDetailer:
                     noise_mask = F.interpolate(mask_c.view(1, 1, side_h, side_w), size=(h, w), mode="area")
                     noise_mask = noise_mask.view(1, 1, 1, h, w).to(z.device)
                     attempts, cands = [], []
-                    base_seed = int(seed) + b + fi * _FACE_SEED_STRIDE + pi * _PASS_SEED_STRIDE
+                    base_seed = (int(seed) + b + fi * _FACE_SEED_STRIDE + pi * _PASS_SEED_STRIDE) & 0xffffffffffffffff
                     retries = retry_schedule(float(denoise), base_seed, retry_max=int(c["retry_max"]) if gate_on else 1,
                                              denoise_step=float(c["retry_denoise_step"]),
                                              seed_step=int(c["retry_seed_step"]))

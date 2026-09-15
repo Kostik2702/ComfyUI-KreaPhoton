@@ -109,7 +109,7 @@ def retry_schedule(denoise: float, seed: int, *, retry_max: int, denoise_step: f
     out = []
     for k in range(int(retry_max)):
         d = max(float(floor), float(denoise) - k * float(denoise_step))
-        out.append((d, int(seed) + k * int(seed_step)))
+        out.append((d, (int(seed) + k * int(seed_step)) & 0xffffffffffffffff))
     return out
 
 
