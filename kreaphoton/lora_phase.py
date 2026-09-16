@@ -115,3 +115,35 @@ def build_phase_models(model, loader=_default_loader, apply_lora=_default_apply)
     return (clean if sets["composition"] != sets["identity"] else None,
             identity,
             texture if sets["texture"] != sets["identity"] else None)
+
+
+IDENTITY_PHASES = ("all", "identity")   # plan phases that carry a character (face/body) LoRA
+
+
+def build_face_model(model, boost: float, loader=_default_loader, apply_lora=_default_apply):
+    """(patcher, boosted, unchanged) for the Face Detailer crop pass, or (None, [], [])
+    when the model carries no plan.
+
+    The crop pass lives in the texture segment (sigma <= ~0.66), so the patcher holds
+    exactly the plan's texture set - like build_phase_models' texture patcher - but
+    every entry whose phase is in IDENTITY_PHASES runs at strength x boost. Measured
+    2026-09-16 on the owner's graph (AnnaMin_v3, 'all', 1.0): at x1.0 every redraw
+    LOSES likeness to the character (ArcFace to the dataset centroid 0.557 -> 0.47-0.49),
+    at x1.5 it gains (-> 0.62-0.66); the LoRA set itself (identity / texture / all six)
+    made no difference. `boosted` / `unchanged` list (lora_name, strength) for the report."""
+    plan = list((getattr(model, "model_options", None) or {}).get(PLAN_KEY, []))
+    if not plan:
+        return None, [], []
+    base = model.clone()
+    base.model_options.pop(PLAN_KEY, None)
+    boosted, unchanged = [], []
+    for i in phase_sets(plan)["texture"]:
+        entry = plan[i]
+        strength = float(entry["strength"])
+        if entry["phase"] in IDENTITY_PHASES:
+            strength *= float(boost)
+            boosted.append((entry["lora_name"], strength))
+        else:
+            unchanged.append((entry["lora_name"], strength))
+        base = apply_lora(base, loader(entry["lora_name"]), strength)
+    return base, boosted, unchanged

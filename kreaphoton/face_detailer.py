@@ -14,7 +14,7 @@ Pass 2 starts from the pass-1 winner AT ITS GUIDE RESOLUTION (no round trip thro
 the crop size), so the detail built at 1024 feeds the 1536 pass. Only the final
 winner is resized down to the crop and pasted.
 
-Phase model: the crop pass runs as ONE lifecycle on the plan's texture patcher
+Phase model: the crop pass runs as ONE lifecycle on the plan's texture set
 (identity- and texture-phase LoRAs act, a composition-only LoRA does not) - the
 pass lives at sigma <= ~0.66, texture territory, and a noise_mask cannot cross a
 phase split (comfy's inpaint blend needs the source latent and the original noise
@@ -24,8 +24,26 @@ where a composition+identity LoRA made the texture set differ from the identity
 set and denoise 0.45 started one step above 0.65). Without a plan the model runs
 as is.
 
+Identity boost (v1.6.1): the plan's identity-carrying LoRAs (phase all / identity)
+run the crop pass at strength x identity_boost (default 1.5) through
+lora_phase.build_face_model. Measured 2026-09-16 on the owner's graph against the
+character's training set (ArcFace to the 120-face centroid): at x1.0 EVERY redraw
+lost likeness (input 0.557 -> 0.47-0.49) whatever the LoRA set, denoise or prompt;
+at x1.5 it gained (0.62-0.66, above the base generation's 0.607), x1.8 plateaued.
+The face has more authority on a 1024-px crop than in the full frame, and at the
+nominal strength the base model's face prior wins the redraw.
+
+Reference: `reference_image` may be a BATCH (several photos of the character); the
+gate measures against the L2-normalised mean of their embeddings - a centroid is a
+far steadier target than one photo (measured: a real photo of the character scores
+~0.79 to the centroid, ~0.63 to another single photo). With a reference the retries
+explore SEEDS at the pass's denoise (the reference is the target, the redraw should
+move toward it), without one they lower denoise (the original crop is the target,
+a retry must move toward it) - keep-best either way.
+
 Module-level seams (_detect, _gate, _run_sampling, _run_inversion, _build_phase_models,
-_upscale) exist so tests can replace the heavy parts; the node calls them by name.
+_build_face_model, _upscale) exist so tests can replace the heavy parts; the node
+calls them by name.
 """
 import json
 
@@ -34,9 +52,9 @@ import torch.nn.functional as F
 
 from . import face_detect
 from .face_geometry import choose_best, crop_box, face_mask, paste, place_mask, retry_schedule, select_faces
-from .lora_phase import PLAN_KEY, build_phase_models
+from .lora_phase import PLAN_KEY, build_face_model, build_phase_models
 from .presets import (DEFAULT_FACE_PRESET, FACE_COMMON, FACE_PRESETS, GUIDANCE, MANIFOLD_MEAN, MANIFOLD_STD,
-                      UPSCALE_TEXTURE_START, preset_guidance, validate_face_presets)
+                      preset_guidance, validate_face_presets)
 from .sampling import run_inversion, run_sampling
 from .schedules import ALPHA, SHIFT, alpha_for_latent, refine_schedule
 
@@ -45,11 +63,17 @@ _PRESET_TOOLTIP = ("subtle: one pass 1024 px / denoise 0.25 (LoRA-identity safe)
                    "full-body frames). Steps follow the effective-step rule (6-7 per pass). Numbers derived "
                    "from the Impact Pack krea2 measurement, not yet validated on this sampler.")
 _MAX_FACES_TOOLTIP = "How many faces to detail, largest bbox first. Faces below min_face_px (48) are skipped."
-_FACE_POSITIVE_TOOLTIP = ("Prompt for the face crop only: the character LoRA trigger + 'close-up portrait, "
-                          "natural skin texture'. Not connected -> positive is used. Without the trigger in "
-                          "either, a character LoRA redraws a generic face.")
-_REFERENCE_TOOLTIP = ("A photo of the character: the identity gate measures every attempt against its face "
-                      "instead of the original crop, and keeps the original when the redraw loses identity.")
+_FACE_POSITIVE_TOOLTIP = ("Optional prompt for the face crop only. Measured 2026-09-16: a short 'trigger, close-up "
+                          "portrait, natural skin texture' prompt scored LOWER on likeness (0.60) than leaving this "
+                          "unconnected and using the scene positive (0.66). Leave unconnected unless the scene "
+                          "prompt says nothing about the face.")
+_REFERENCE_TOOLTIP = ("Photo(s) of the character - a batch of several is best: the identity gate measures every "
+                      "attempt against their mean embedding, retries explore seeds at the pass denoise, and the "
+                      "original face is kept when the redraw loses likeness.")
+_BOOST_TOOLTIP = ("Strength multiplier for the LoRA plan's identity LoRAs (phase all / identity) in the face pass. "
+                  "1.0 = plan strengths as they are (measured: every redraw then LOSES likeness); 1.5 = measured "
+                  "gain; 1.8 = plateau. Needs a KreaPhoton LoRA Phase plan on model - a classic LoRA loader is "
+                  "not touched (report says so).")
 _UPSCALE_MODEL_TOOLTIP = "Optional ESRGAN-class model to enlarge the crop before the pass (else lanczos)."
 _TUNE_TOOLTIP = ("Calibration override, leave EMPTY. JSON keys: crop_factor, bbox_threshold, min_face_px, "
                  "feather, dilation, retry_max, retry_denoise_step, retry_seed_step, sampler, guidance, "
@@ -66,6 +90,26 @@ _gate = face_detect.get_gate
 _run_sampling = run_sampling
 _run_inversion = run_inversion
 _build_phase_models = build_phase_models
+_build_face_model = build_face_model
+
+
+def reference_embedding(gate, images):
+    """(centroid, n_faces) over a (B, H, W, C) batch: the L2-normalised mean of the
+    per-image embeddings of the images where the gate finds a face; (None, 0) when
+    it finds none."""
+    embs = []
+    for b in range(int(images.shape[0])):
+        e = gate.embed(images[b:b + 1])
+        if e is not None:
+            embs.append(e)
+    if not embs:
+        return None, 0
+    c = torch.stack(embs, dim=0).mean(dim=0)
+    return c / c.norm().clamp_min(1e-8), len(embs)
+
+
+def _fmt_loras(pairs):
+    return ", ".join("%s %.2f" % (name.replace("\\", "/").split("/")[-1], s) for name, s in pairs)
 
 
 def _upscale(image, scale: float, upscale_model=None):
@@ -131,6 +175,8 @@ class KreaPhotonFaceDetailer:
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "preset": (list(FACE_PRESETS.keys()), {"default": DEFAULT_FACE_PRESET, "tooltip": _PRESET_TOOLTIP}),
                 "max_faces": ("INT", {"default": 1, "min": 1, "max": 8, "tooltip": _MAX_FACES_TOOLTIP}),
+                "identity_boost": ("FLOAT", {"default": 1.5, "min": 0.0, "max": 3.0, "step": 0.05,
+                                             "tooltip": _BOOST_TOOLTIP}),
             },
             "optional": {
                 "negative": ("CONDITIONING", {"tooltip": "Optional; at cfg 1 (the default) it does nothing."}),
@@ -146,8 +192,8 @@ class KreaPhotonFaceDetailer:
     FUNCTION = "detail"
     CATEGORY = "KreaPhoton"
 
-    def detail(self, model, positive, image, vae, seed, preset, max_faces, negative=None, face_positive=None,
-               reference_image=None, upscale_model=None, tune=""):
+    def detail(self, model, positive, image, vae, seed, preset, max_faces, identity_boost=1.5, negative=None,
+               face_positive=None, reference_image=None, upscale_model=None, tune=""):
         from .nodes import LATENT_PX, ALIGN_PX, _ORDER_FROM_SAMPLER_NAME, _decode_tiled, _encode_tiled
         passes, id_threshold, c = apply_tune_face(FACE_PRESETS[preset], FACE_COMMON, tune)
         if c["sampler"] not in _ORDER_FROM_SAMPLER_NAME:
@@ -155,8 +201,8 @@ class KreaPhotonFaceDetailer:
         order = _ORDER_FROM_SAMPLER_NAME[c["sampler"]]
         cond = face_positive if face_positive is not None else positive
         guidance_mode, flat_cfg = preset_guidance(c, negative is not None)
-        _, identity, plan_texture = _build_phase_models(model)
         plan = list((getattr(model, "model_options", None) or {}).get(PLAN_KEY, []))
+        boost = float(identity_boost)
 
         gate = _gate()
         report = []
@@ -164,16 +210,32 @@ class KreaPhotonFaceDetailer:
             report.append("identity gate: ON (%s)" % face_detect.ARCFACE_PACK)
         else:
             report.append("identity gate: OFF (%s)" % (gate.reason or "insightface not available"))
-        if plan and face_positive is None:
-            report.append("note: LoRA plan has %d entries; face_positive is not connected - make sure the "
-                          "character trigger is in positive" % len(plan))
+        # The masked crop pass is ONE lifecycle on the plan's texture set (the pass lives at
+        # sigma <= ~0.66, texture territory). Never a phase split: comfy's inpaint blend needs
+        # the source latent + noise in every segment - a split hands segment 2 the noisy state,
+        # the mask band decodes to coloured speckle (confetti ring, 2026-09-15).
+        if plan and boost != 1.0:
+            run_model, boosted, unchanged = _build_face_model(model, boost)
+            report.append("identity boost x%.2f: %s%s" % (boost, _fmt_loras(boosted) or "no identity-phase LoRA in the plan",
+                                                        ("; unchanged: " + _fmt_loras(unchanged)) if unchanged else ""))
+        else:
+            _, identity, plan_texture = _build_phase_models(model)
+            run_model = plan_texture if plan_texture is not None else identity
+            if not plan and boost != 1.0:
+                report.append("identity boost x%.2f ignored: model carries no KreaPhoton LoRA Phase plan (a classic "
+                              "LoRA loader is not touched)" % boost)
+        if face_positive is not None:
+            report.append("note: face_positive is connected - measured 2026-09-16, a short trigger prompt scored "
+                          "lower on likeness than the scene positive; try it unconnected")
         ref_emb, ref_is_external = None, False
         if reference_image is not None and gate.available:
-            ref_emb = gate.embed(reference_image[:1])
+            ref_emb, n_ref = reference_embedding(gate, reference_image)
             if ref_emb is None:
                 report.append("warning: no face found in reference_image - measuring against the original crop")
             else:
                 ref_is_external = True
+                report.append("reference: %d face(s) in %d image(s), retries explore seeds at the pass denoise"
+                              % (n_ref, int(reference_image.shape[0])))
 
         out_images, out_masks = [], []
         for b in range(int(image.shape[0])):
@@ -227,17 +289,13 @@ class KreaPhotonFaceDetailer:
                     noise_mask = noise_mask.view(1, 1, 1, h, w).to(z.device)
                     attempts, cands = [], []
                     base_seed = (int(seed) + b + fi * _FACE_SEED_STRIDE + pi * _PASS_SEED_STRIDE) & 0xffffffffffffffff
+                    # with a reference the target is the character: retries explore seeds at the
+                    # pass denoise; without one the target is the original crop: retries lower denoise
                     retries = retry_schedule(float(denoise), base_seed, retry_max=int(c["retry_max"]) if gate_on else 1,
-                                             denoise_step=float(c["retry_denoise_step"]),
+                                             denoise_step=0.0 if ref_is_external else float(c["retry_denoise_step"]),
                                              seed_step=int(c["retry_seed_step"]))
                     for ai, (d_a, seed_a) in enumerate(retries):
                         sigmas = refine_schedule(int(n_steps), alpha=alpha, denoise=float(d_a))
-                        # The masked crop pass is ONE lifecycle on the plan's texture patcher
-                        # (the pass lives at sigma <= ~0.66, texture territory). Never a
-                        # phase split: comfy's inpaint blend needs the source latent + noise
-                        # in every segment - a split hands segment 2 the noisy state, the
-                        # mask band decodes to coloured speckle (confetti ring, 2026-09-15).
-                        run_model = plan_texture if plan_texture is not None else identity
                         latent_in = {"samples": z, "noise_mask": noise_mask}
                         add_noise = True
                         if int(c["invert"]):

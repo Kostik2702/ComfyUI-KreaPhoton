@@ -228,28 +228,42 @@ KreaPhoton sampler, measures the result's identity against the original face (Ar
 retries when it drifted, and pastes the winner back through a feathered ellipse.
 
 Inputs: `model` (may carry a LoRA Phase plan), `positive`, `image`, `vae`, `seed`, `preset`,
-`max_faces` (1–8, largest bbox first; faces under 48 px are skipped). Optional: `negative`
-(nothing at cfg 1), `face_positive` — a conditioning for the crop only (**put the character
-LoRA trigger here** plus "close-up portrait, natural skin texture"; not connected → `positive`
-is used, and the report reminds you when a plan is present), `reference_image` — a photo of the
-character; identity is then measured against it and the original face is kept if the redraw
-loses likeness, `upscale_model` — SR model to enlarge the crop (else lanczos), `tune` — JSON
-overrides. Outputs: `image`, `mask` (union of the pasted faces, for chaining), `report`
-(per face: bbox, every attempt's denoise / seed / id_sim, the verdict; also printed to the
-console).
+`max_faces` (1–8, largest bbox first; faces under 48 px are skipped), `identity_boost`
+(default 1.5 — strength multiplier for the plan's identity LoRAs in the face pass, see
+**LoRA likeness**). Optional: `negative` (nothing at cfg 1), `face_positive` — a conditioning
+for the crop only (measured 2026-09-16: a short "trigger, close-up portrait, natural skin
+texture" prompt scored *lower* on likeness than the scene `positive`, 0.60 vs 0.66 — leave it
+unconnected unless the scene prompt says nothing about the face; the report notes when it is
+connected), `reference_image` — photo(s) of the character, a batch of several is best: identity
+is measured against the mean of their embeddings, retries explore seeds at the pass denoise,
+and the original face is kept if the redraw loses likeness, `upscale_model` — SR model to
+enlarge the crop (else lanczos), `tune` — JSON overrides. Outputs: `image`, `mask` (union of
+the pasted faces, for chaining), `report` (per face: bbox, every attempt's denoise / seed /
+id_sim, the verdict; also printed to the console).
 
 Per face, per pass: square crop of `2.0 ×` the bbox (aligned to 16 px) → resized so its long
 side is the pass's guide → VAE encode → `refine_schedule(n_steps, denoise)` with an elliptic
 `noise_mask` (bbox dilated 10 %, 6 % feather) → decode → ArcFace cosine to the reference.
-Below `id_threshold` the pass is retried with `denoise − 0.05` and `seed + 1000` (up to 3
-attempts); the attempt with the highest similarity wins, never a worse one. Pass 2 starts from
+Below `id_threshold` the pass is retried (up to 3 attempts) — without a reference with
+`denoise − 0.05` and `seed + 1000` (the original crop is the target, a retry moves toward it),
+with a reference at the same denoise and `seed + 1000` (the character is the target, a retry
+explores); the attempt with the highest similarity wins, never a worse one. Pass 2 starts from
 the pass-1 winner at its full guide resolution, so the detail built at 1024 feeds 1536; only the
 final winner is resized down to the crop and pasted.
 
 **LoRA likeness.** Every preset pass starts below σ 0.66 (`refine_schedule` at denoise ≤ 0.45),
-i.e. inside the plan's texture segment: the crop runs on the plan's texture patcher exactly as
+i.e. inside the plan's texture segment: the crop runs on the plan's texture set exactly as
 Upscale v2 does — a character LoRA in `identity` or `all`, and a style LoRA in `texture`, act on
-the face; a `composition`-only LoRA does not. Without a plan the model runs as connected.
+the face; a `composition`-only LoRA does not — with the identity LoRAs (`all` / `identity`) at
+`strength × identity_boost`. Measured 2026-09-16 on a real graph (AnnaMin_v3 at 1.0 / `all`,
+ArcFace cosine of the detailed face to the centroid of the LoRA's 120 training faces; a real
+photo of the character scores ~0.79 there, the base generation 0.61, the detailer's input after
+Upscale v2 0.56): at ×1.0 **every** redraw lost likeness (0.47–0.49) whatever the LoRA set
+(identity set, texture set, all six LoRAs), denoise (0.35–0.6) or prompt; at ×1.3 it broke even
+(0.60), at ×1.5 it gained (0.62–0.66 over four seeds), at ×1.8 it plateaued (0.645). On a large
+crop the face has far more authority than in the full frame, and at the nominal strength the
+base model's face prior wins the redraw. Without a plan (classic LoRA loader) nothing is
+boosted and the report says so. The measurement rig: `mb search "Face Detailer identity boost"`.
 
 Presets (`guide / denoise / steps` per pass, then `id_threshold`):
 
@@ -474,6 +488,16 @@ the preset → `run_sampling` contract (RAW CFG, INPUT_TYPES backward compatibil
 ```
 
 ## Changelog
+
+**1.6.1**
+- Face Detailer: `identity_boost` (default 1.5) — the plan's identity LoRAs (`all` /
+  `identity`) run the face pass at `strength × boost` (`lora_phase.build_face_model`).
+  Measured on the owner's graph against the character's training set: at ×1.0 every redraw
+  lost likeness to the character (0.557 → 0.47–0.49), at ×1.5 it gains (0.62–0.66); neither
+  the LoRA set nor denoise nor the prompt was the lever. `reference_image` accepts a batch
+  (centroid of the found faces); with a reference the retries keep the pass denoise and
+  explore seeds. `face_positive` tooltip / README: a short trigger prompt measured lower
+  than the scene positive, leave it unconnected. Report lines for all three.
 
 **1.6.0**
 - `KreaPhoton Face Detailer` node (`face_detailer.py`, `face_geometry.py`, `face_detect.py`):

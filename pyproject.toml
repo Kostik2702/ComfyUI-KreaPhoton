@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-kreaphoton"
 description = "Photorealism-focused sampling nodes for Krea 2 Turbo: analytic restart schedules, detail boost, seed variety, sigma-adaptive guidance, faithful upscale, identity-gated face detailer."
-version = "1.6.0"
+version = "1.6.1"
 license = { text = "MIT" }
 
 [tool.comfy]

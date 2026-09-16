@@ -678,7 +678,8 @@ def main():
     # --- (13) v1.6 Face Detailer: INPUT_TYPES order contract (behaviour: tests/test_face.py) ---
     print("[13] KreaPhotonFaceDetailer INPUT_TYPES order")
     it3 = nodes.KreaPhotonFaceDetailer.INPUT_TYPES()
-    assert list(it3["required"].keys()) == ["model", "positive", "image", "vae", "seed", "preset", "max_faces"]
+    assert list(it3["required"].keys()) == ["model", "positive", "image", "vae", "seed", "preset", "max_faces",
+                                            "identity_boost"]
     assert list(it3["optional"].keys()) == ["negative", "face_positive", "reference_image", "upscale_model", "tune"]
     assert it3["required"]["preset"][1]["default"] == presets.DEFAULT_FACE_PRESET
     assert it3["required"]["max_faces"][1]["min"] == 1 and it3["required"]["max_faces"][1]["max"] == 8

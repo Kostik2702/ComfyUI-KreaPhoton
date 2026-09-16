@@ -229,17 +229,36 @@ def test_node():
     node = fdl.KreaPhotonFaceDetailer()
     model = _FakeModel({lp.PLAN_KEY: [{"lora_name": "a", "strength": 1.0, "phase": "identity"}]})
 
-    # gate OFF -> one run_sampling per pass, identity model, latent-sized noise_mask
+    face_builds = []
+
+    def fake_build_face(model, boost):
+        face_builds.append(boost)
+        return _FakeModel(name="face"), [("a", 1.0 * boost)], []
+    fdl._build_face_model = fake_build_face
+
+    # gate OFF -> one run_sampling per pass, boosted face model (default identity_boost 1.5),
+    # latent-sized noise_mask
     fdl._gate = lambda: _FakeGate([], available=False)
     calls.clear()
     out_img, out_mask, report = node.detail(model, "pos", img, _FakeVAE(), 5, "standard", 1)
     assert out_img.shape == img.shape and out_mask.shape == (1, 512, 768)
     assert len(calls) == 2, len(calls)                      # two passes, one attempt each
-    # phase-model rule: the masked crop pass is ONE lifecycle on the plan's texture patcher,
-    # never a split (a noise_mask cannot cross a segment boundary - confetti ring 2026-09-15)
+    assert face_builds == [1.5] and "identity boost x1.50: a 1.50" in report, (face_builds, report)
+    # never a phase split (a noise_mask cannot cross a segment boundary - confetti ring 2026-09-15)
     for c in calls:
-        assert c["model"].name == "texture" and c["kw"].get("texture_model") is None, (c["model"].name, c["kw"])
+        assert c["model"].name == "face" and c["kw"].get("texture_model") is None, (c["model"].name, c["kw"])
         assert c["latent"].get("noise_mask") is not None
+    # identity_boost 1.0 -> the plan's texture patcher as before, no face build
+    calls.clear(); face_builds.clear()
+    _, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "standard", 1, identity_boost=1.0)
+    assert face_builds == [] and all(c["model"].name == "texture" for c in calls), (face_builds, [c["model"].name for c in calls])
+    assert "identity boost" not in report, report
+    # no plan + boost -> raw model, report says the boost was ignored
+    calls.clear()
+    _, _, report = node.detail(_FakeModel(name="raw"), "pos", img, _FakeVAE(), 5, "subtle", 1)
+    assert calls[0]["model"].name == "raw" and "identity boost x1.50 ignored" in report, report
+    calls.clear()
+    out_img, out_mask, report = node.detail(model, "pos", img, _FakeVAE(), 5, "standard", 1)
     assert calls[0]["latent"]["samples"].shape[-2] == 1024 // 8, calls[0]["latent"]["samples"].shape
     assert calls[1]["latent"]["samples"].shape[-2] == 1536 // 8, calls[1]["latent"]["samples"].shape
     nm = calls[0]["latent"]["noise_mask"]
@@ -252,13 +271,47 @@ def test_node():
     assert not torch.equal(out_img[:, 100:240, 300:420], img[:, 100:240, 300:420])
     assert torch.equal(out_img[:, 480:, :40], img[:, 480:, :40])
 
-    # gate ON: first attempt below threshold, second passes -> 2 calls in pass 1
+    # gate ON: first attempt below threshold, second passes -> 2 calls in pass 1; without a
+    # reference the retry LOWERS denoise (the original crop is the target)
     fdl._gate = lambda: _FakeGate([0.5, 0.8, 0.9, 0.9])
     calls.clear()
     _, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1)
     assert len(calls) == 2, len(calls)
     assert "0.500" in report and "0.800" in report and "pass" in report, report
     assert calls[0]["kw"]["seed"] != calls[1]["kw"]["seed"]
+    assert float(calls[1]["sigmas"][0]) < float(calls[0]["sigmas"][0]), (calls[0]["sigmas"], calls[1]["sigmas"])
+
+    # reference BATCH -> centroid of the per-image embeddings; the retry keeps the pass
+    # denoise and changes the seed (the character is the target)
+    class _VecGate:
+        available, reason = True, ""
+
+        def __init__(self, vecs):
+            self.vecs = [torch.tensor(v) for v in vecs]
+
+        def embed(self, image):
+            return self.vecs.pop(0)
+
+        @staticmethod
+        def sim(a, b):
+            return float(torch.dot(a, b))
+    ref = torch.rand(3, 64, 64, 3)
+    fdl._gate = lambda: _VecGate([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0],      # 3 reference images -> centroid ~(0.894, 0.447)
+                                  [0.894, 0.447],                          # original crop = centroid -> orig_sim 1.0
+                                  [0.0, 1.0],                              # attempt 1 -> 0.447 (below 0.70)
+                                  [0.894, 0.447]])                         # attempt 2 -> 1.0 pass
+    calls.clear()
+    _, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, reference_image=ref)
+    assert "reference: 3 face(s) in 3 image(s)" in report, report
+    assert len(calls) == 2 and "pass (attempt 2)" in report, (len(calls), report)
+    assert torch.equal(calls[0]["sigmas"], calls[1]["sigmas"]), "with a reference the retry keeps the denoise"
+    assert calls[0]["kw"]["seed"] != calls[1]["kw"]["seed"]
+    # a reference batch with no face at all -> warning, gate falls back to the original crop
+    g = _FakeGate([0.9])
+    g.embed = lambda image: None
+    fdl._gate = lambda: g
+    _, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, reference_image=ref)
+    assert "no face found in reference_image" in report and "no face found in the original crop" in report, report
 
     # face_positive replaces positive for the crop; negative passes through
     calls.clear()
@@ -296,9 +349,45 @@ def test_node():
 
     # INPUT_TYPES order contract
     it = fdl.KreaPhotonFaceDetailer.INPUT_TYPES()
-    assert list(it["required"]) == ["model", "positive", "image", "vae", "seed", "preset", "max_faces"]
+    assert list(it["required"]) == ["model", "positive", "image", "vae", "seed", "preset", "max_faces", "identity_boost"]
+    assert it["required"]["identity_boost"][1]["default"] == 1.5
     assert list(it["optional"]) == ["negative", "face_positive", "reference_image", "upscale_model", "tune"]
     print("  [7] node control flow with fakes ... ok")
+
+
+def test_face_model():
+    """lora_phase.build_face_model: the plan's texture set with identity-phase entries at
+    strength x boost; texture-only entries unchanged; no plan -> (None, [], [])."""
+    lp = importlib.import_module("kreaphoton.lora_phase")
+    applied = []
+
+    def apply(p, lora, strength):
+        applied.append((lora, round(strength, 3)))
+        return p
+    plan = [{"lora_name": "char", "strength": 1.0, "phase": "all"},
+            {"lora_name": "eyes", "strength": 1.5, "phase": "composition+identity"},
+            {"lora_name": "face", "strength": 0.8, "phase": "identity"},
+            {"lora_name": "style", "strength": 0.4, "phase": "texture"},
+            {"lora_name": "layout", "strength": 1.0, "phase": "composition"},
+            {"lora_name": "off", "strength": 0.0, "phase": "all"}]
+    m = _FakeModel({lp.PLAN_KEY: plan})
+    p, boosted, unchanged = lp.build_face_model(m, 1.5, loader=lambda n: n, apply_lora=apply)
+    assert p is not None and lp.PLAN_KEY not in p.model_options
+    assert applied == [("char", 1.5), ("face", 1.2), ("style", 0.4)], applied      # texture set only, in plan order
+    boosted = [(n, round(s, 3)) for n, s in boosted]
+    assert boosted == [("char", 1.5), ("face", 1.2)] and unchanged == [("style", 0.4)], (boosted, unchanged)
+    assert lp.PLAN_KEY in m.model_options, "the input model keeps its plan"
+    assert lp.build_face_model(_FakeModel(), 1.5, loader=lambda n: n, apply_lora=apply) == (None, [], [])
+    # the reference centroid helper: mean of the found faces, unit length, count
+    import torch
+    fdl = importlib.import_module("kreaphoton.face_detailer")
+
+    class G:
+        def __init__(self): self.q = [torch.tensor([1.0, 0.0]), None, torch.tensor([0.0, 1.0])]
+        def embed(self, image): return self.q.pop(0)
+    c, n = fdl.reference_embedding(G(), torch.zeros(3, 8, 8, 3))
+    assert n == 2 and torch.allclose(c, torch.tensor([0.7071, 0.7071]), atol=1e-3), (c, n)
+    print("  [8] build_face_model / reference_embedding ... ok")
 
 
 def main():
@@ -311,6 +400,7 @@ def main():
     test_retry_and_best(fg)
     test_detect_helpers()
     test_node()
+    test_face_model()
     print("test_face: ALL PASSED")
 
 
