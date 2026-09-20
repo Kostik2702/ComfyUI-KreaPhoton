@@ -12,21 +12,30 @@ cycle), not copied from SD/SDXL folklore.
 > either do nothing or actively break it. This pack is the result of measuring what
 > actually works on this exact model.
 
+Current version **1.6.1** — ten nodes, one engine (`kreaphoton/sampling.py`), MIT.
+Everything that is measured is labeled measured; everything that is a design hypothesis
+is labeled as such, in the README and in `presets.py`.
+
 ---
 
 ## Nodes
 
 | Node | Purpose |
 |---|---|
-| **KreaPhoton Sampler** | All-in-one: seed / preset / variety (+ `denoise` for refine). Everything else computed from validated presets. |
-| **KreaPhoton Sampler (Advanced)** | Same engine, SIGMAS input, every parameter exposed (+ `x0_extrapolation`, `variety_seed`). |
-| **KreaPhoton Scheduler** | SIGMAS generator with the restart segment encoded (see warning below). |
+| **KreaPhoton Sampler** | All-in-one: seed / preset / variety (+ `denoise` for refine, `coherence`, phase models). Everything else computed from validated presets. |
+| **KreaPhoton Sampler (Advanced)** | Same engine, SIGMAS input, every parameter exposed (+ `x0_extrapolation`, `variety_seed`, `pag_*`, `guidance_rescale`). |
+| **KreaPhoton Scheduler** | SIGMAS generator with the restart segment encoded (see warning below); optional `self_refine` second descent. |
 | **KreaPhoton Empty Latent** | Photo aspect ratios / megapixel tiers for Krea2 (16-channel latent). |
 | **KreaPhoton Encode** | krea2-native text encode (plain `KREA2_TEMPLATE` path) with an optional calibrated style directive. |
-| **KreaPhoton LoRA Phase** | Attaches a LoRA to the conditioning as a comfy weight hook that is active only in one phase of the schedule (composition / identity / texture). Chain one per LoRA. |
+| **KreaPhoton LoRA Phase** | Records a LoRA + strength + phase (composition / identity / texture / …) in a plan the model carries; the KreaPhoton samplers, upscalers and the Face Detailer expand the plan into phase models with comfy's ordinary LoRA patching (works on int8 / fp8 checkpoints). Chain one per LoRA. |
 | **KreaPhoton Save Image** | Save with folder picker, timestamp+counter unique names, PNG/JPEG/WebP metadata. Local-only power-user feature (the folder browser has no path allowlist - do not expose a `--listen` server). |
 | **KreaPhoton Upscale** | Faithful tiled ×1.25–×2.0 upscale with the same Krea 2 model: latent tiles re-blended every step (no seams), back-projection to the source (the downscaled result *is* the source), presets only, optional SR-model base. |
-| **KreaPhoton Face Detailer** | YOLO face detection → the `max_faces` largest faces redrawn at 1024 → 1536 px with the same sampler on the LoRA plan's phase model, ArcFace identity gate with keep-best retry, feathered paste. Presets `subtle` / `standard` / `strong`. |
+| **KreaPhoton Upscale v2** | The same faithful refine plus empty-tile skipping, per-step grid shift and optional noise inversion; its own preset calibration (`polish` / `detail` / `strong`), shipped separately so v1 stays as calibrated. |
+| **KreaPhoton Face Detailer** | YOLO face detection → the `max_faces` largest faces redrawn at 1024 → 1536 px with the same sampler on the LoRA plan's texture model (identity LoRAs boosted ×1.5), ArcFace identity gate with keep-best retry, feathered paste. Presets `subtle` / `standard` / `strong`. |
+
+Typical pipeline: `Empty Latent` + `Encode` → `LoRA Phase` (one per LoRA) → `Sampler` →
+`VAEDecode` → `Upscale v2` → `Face Detailer` → `Save Image`. Every IMAGE-stage node takes
+the same `model` (with its plan) and `positive`.
 
 ### KreaPhoton Sampler
 
@@ -47,8 +56,13 @@ Minimum knobs by design. Inputs:
 | `vae` (opt) | VAE | connect to get the decoded result as a thumbnail on the node |
 | `seed_b` (opt) | INT | second seed for the composition blend (−1 = off) |
 | `blend` (opt) | FLOAT | 0 = off; >0 spherically interpolates the composition toward `seed_b` (see Composition blend) |
+| `restart_enhance` (opt) | combo | `off` (default) / `dlss5 default` / `dlss5 natural` / `dlss5 cinematic` — DLSS 5 Photoreal Enhance at the restart boundary; experimental, needs `vae` and the `ComfyUI-dlss-enhancer` pack (see v1.4 notes) |
+| `texture_model` (opt) | MODEL | model for the texture phase (the restart segment, σ ≤ 0.65) — see Phase models |
+| `coherence` (opt) | combo | `off` (default) / `jump` / `self_refine` / `jump+self_refine` — see Coherence tools |
 
-Output: `LATENT`.
+Output: `LATENT`. A model carrying a LoRA Phase plan is expanded into phase models
+automatically; explicitly connected `clean_model` / `texture_model` override the plan for
+their phase.
 
 ### KreaPhoton Sampler (Advanced)
 
@@ -141,6 +155,14 @@ costs one LoRA re-patch (a few seconds on a 12B model). The segments share one g
 detail-envelope index and one guider setup, so the split integrates the exact sigma
 sequence of a single run.
 
+**A masked run never splits.** If the latent carries a `noise_mask` (inpaint, the Face
+Detailer crop pass) and the plan or the inputs would split the schedule, the whole schedule
+runs in one lifecycle on the model of the phase that covers most of it (a console line
+says which). Reason, measured 2026-09-15: comfy's `KSamplerX0Inpaint` re-noises the
+unmasked band from the *source* latent with the *original* noise at every step and writes
+the source back at the end; a second segment hands it the mid-trajectory state and zero
+noise, and the feather band decodes to coloured speckle (the "confetti ring").
+
 Per-phase prompts (the Power-Nodes `positive_stg2/stg3` idea) need no extra input: build
 them with the stock `ConditioningSetTimestepRange` + `ConditioningCombine` nodes — the
 guider honours conditioning timestep ranges like any ComfyUI sampler. Cover the whole
@@ -153,7 +175,8 @@ diffusion refine adds real micro-texture and edge definition, and a source-consi
 step guarantees that the result reproduces the source *exactly* when scaled back down —
 layout, tone, faces and objects cannot change. Calibrated on existing frames (21 in two surveys: hands, freckled faces, groups of three
 to five people, coins, phones, cards, watches, hair, screen text, JPEG sources, night
-scenes; see `docs/07` §11), not on prompts.
+scenes; research design doc 07 §11 — the numbered research docs are not shipped with the
+pack, their conclusions are in this README and in `presets.py` comments), not on prompts.
 
 | Input | Type | Notes |
 |---|---|---|
@@ -202,7 +225,7 @@ connected. VRAM: the batch of four 1024² tiles fits with room to spare.
 ### KreaPhoton Upscale v2
 
 The same faithful refine as v1 with three mechanisms added and measured on the same frames
-(`docs/07` §12), shipped as a separate node so v1 stays as calibrated:
+(research design doc 07 §12), shipped as a separate node so v1 stays as calibrated:
 
 - **Empty-tile skipping** — tiles whose source carries no detail (bokeh, night sky, plain
   walls; absolute luma-Laplacian activity below a threshold at the tile's 90th percentile)
@@ -305,8 +328,40 @@ into KreaPhoton samplers.
 ### KreaPhoton Empty Latent
 
 Megapixel tiers S (~1.0 MP) / M (~1.4) / L (~1.7, default) / XL (~2.1) × aspects
-1:1, 4:3, 3:2 (default), 16:9, 9:16. All dimensions divisible by 16 (VAE /8 × DiT
-patch 2×2).
+1:1, 4:3, 3:2 (default), 16:9, 9:16, plus `batch_size`. All dimensions divisible by 16
+(VAE /8 × DiT patch 2×2). Exact sizes (W × H):
+
+| tier | 1:1 | 4:3 | 3:2 | 16:9 | 9:16 |
+|---|---|---|---|---|---|
+| S (~1.0 MP) | 1024×1024 | 1152×864 | 896×1344 | 1344×768 | 768×1344 |
+| M (~1.4 MP) | 1184×1184 | 1344×1008 | 1040×1568 | 1568×880 | 880×1568 |
+| L (~1.7 MP) | 1312×1312 | 1504×1120 | 1088×1600 | 1728×960 | 960×1728 |
+| XL (~2.1 MP) | 1440×1440 | 1664×1248 | 1184×1776 | 1920×1088 | 1088×1920 |
+
+Note that the `3:2` bucket is **portrait** (2:3, W < H — the default 1088×1600 frame
+quoted throughout this README); `4:3` and `16:9` are landscape, `9:16` portrait.
+
+### KreaPhoton Encode
+
+`clip` + `text` → CONDITIONING through krea2's plain `KREA2_TEMPLATE` path (the same
+encode the stock CLIPTextEncode does for this model), with an optional `style` directive
+prepended to the prompt: `off` (default, faithful / literal), `editorial`, `cinematic`,
+`natural` (short calibrated nudges — krea2's Qwen encoder responds strongly to leading
+instruction text) or `custom` (uses `custom_directive`). Krea2 renders media nouns
+literally — avoid "magazine", "cover", "snapshot", "poster" in prompts, they leak as text
+and borders.
+
+### KreaPhoton Save Image
+
+`images`, `folder_path` (absolute server folder, **Browse** button; empty = the standard
+`output/`; created if missing), `filename_prefix` (default `KreaPhoton`), `format`
+`png` / `jpg` / `webp`, `quality` (jpg / webp), `save_metadata` (PNG text chunks — drag
+the PNG back into ComfyUI to restore the graph; EXIF for jpg / webp). Names are
+`prefix_YYYYMMDD-HHMMSS-mmm_00001.ext` (timestamp to the millisecond + batch index; on a
+collision the counter continues past it), unique across runs. The folder browser is served by
+`server_routes.py` + `web/kreaphoton_save.js` and has **no path allowlist** — it lists any
+directory the ComfyUI process can read. Local use only; do not expose a `--listen` server
+with this pack installed.
 
 ---
 
@@ -323,6 +378,18 @@ KreaPhoton Empty Latent ──────────┘
 3. Optionally connect the VAE to the sampler's `vae` input — the finished image shows
    directly on the node; `preview_method=auto` (default) shows the image forming from
    noise every step, so you can cancel early.
+
+The full photo pipeline (LoRA character + style, upscale, faces, save):
+
+```
+CheckpointLoader ─► LoRA Phase (character, identity) ─► LoRA Phase (style, texture) ─┬─► KreaPhoton Sampler ─► VAEDecode ─► KreaPhoton Upscale v2 ─► KreaPhoton Face Detailer ─► KreaPhoton Save Image
+KreaPhoton Encode (positive) ─────────────────────────────────────────────────────────┴─► (positive of every KreaPhoton node)
+KreaPhoton Empty Latent ─► (latent_image)
+```
+
+The plan travels with the MODEL: the sampler runs each LoRA only in its phase, Upscale
+honours the identity / texture LoRAs (never the composition ones), the Face Detailer runs
+the crop on the texture set with the identity LoRAs at `×identity_boost`.
 
 ---
 
@@ -440,12 +507,24 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/Kostik2702/ComfyUI-KreaPhoton.git
 ```
 
-Restart ComfyUI. No extra Python dependencies for the samplers and upscalers — torch and
-comfy only. The Face Detailer needs `ultralytics` (+ `face_yolov8m.pt`) and, for the identity
-gate, `insightface` + `onnxruntime` (+ `buffalo_l`) — see its section.
+Restart ComfyUI. No extra Python dependencies for the samplers, scheduler, encode, save
+and upscalers — torch and comfy only (no `requirements.txt`, nothing is pip-installed).
 
-Requirements: ComfyUI (0.2x, tested on 0.26) + a Krea 2 Turbo checkpoint
-(Wan21 16-channel latent family).
+Per-feature dependencies (the Face Detailer's detector is the only hard one — the others
+degrade with a console line when absent):
+
+| Feature | Needs |
+|---|---|
+| Face Detailer detection | `ultralytics` + `models/ultralytics/bbox/face_yolov8m.pt` (the Impact Subpack installs both; else `pip install ultralytics` and the detector from `huggingface.co/Bingsu/adetailer`) — **required** for the node to run |
+| Face Detailer identity gate | `insightface` + `onnxruntime` + `models/insightface/models/buffalo_l/` — without them one attempt per pass, no retry |
+| `taesd` preview | `lighttaew2_1` in `models/vae_approx` (falls back to latent2rgb) |
+| `restart_enhance` | the `ComfyUI-dlss-enhancer` pack (experimental, measured practically invisible) |
+| SR-model base in Upscale / Face Detailer | any ESRGAN-class `UPSCALE_MODEL` (measured with 4xNomos8kSCHAT-L / 4xNomos8kDAT) |
+
+Requirements: ComfyUI 0.2x–0.3x (developed on 0.26, current on 0.30.1; the samplers go
+through `comfy.samplers` / `CFGGuider` and `SamplerCustomAdvanced`'s prepare chain, the
+Face Detailer through `KSamplerX0Inpaint`) + a Krea 2 Turbo checkpoint (Wan21 16-channel
+latent family; bf16 and int8 / fp8-quantized both work, LoRA plans included).
 
 ---
 
@@ -471,21 +550,36 @@ Requirements: ComfyUI (0.2x, tested on 0.26) + a Krea 2 Turbo checkpoint
 - The validation domain is narrow (3 prompts × 3 seeds × official Turbo). Faces of
   different ages/skin tones, groups, hands, text, night/interior scenes, LoRA stacks
   and quantized checkpoints are not covered by the evidence base.
+- `KreaPhoton Face Detailer`: the preset numbers (guide / denoise / steps) are derived
+  from an Impact Pack measurement on krea2, not validated on the KreaPhoton sampler; the
+  `identity_boost` default was measured on one character LoRA and one graph. The ArcFace
+  gate runs on CPU (≈1.2 s per embedding). The detector needs `ultralytics` — without it
+  the node fails with a clear message rather than passing the image through.
+- `KreaPhoton Save Image`'s folder browser has no path allowlist (local use only).
+- The pack's own `WEB_DIRECTORY` ships one JS extension (`web/kreaphoton_save.js`); the
+  on-node previews and thumbnails use ComfyUI's stock preview channel.
 
 ## Testing
 
 Plain-assert test suite (`tests/run_tests.py`, no pytest dependency — runs under the
-ComfyUI embedded interpreter, 8 files). Tests assert invariants, not literal preset
-values: schedule equivalence to stock `calculate_sigmas` at features-off, model calls
-== steps for every step count, SIGMAS validation accept/reject table, restart variance
-balance, guidance window exactness + variety cond switch, bit-exactness of untouched
-conditioning taps, `corr(lf′, lf) = √(1−a²)` for the LF re-composition, in-loop
-variety == `lf_recompose` of the boundary state, terminal extrapolation formula, and
-the preset → `run_sampling` contract (RAW CFG, INPUT_TYPES backward compatibility).
+ComfyUI embedded interpreter, 9 files, each a subprocess so an import failure is a red
+file, not a skipped one). Tests assert invariants, not literal preset values: schedule
+equivalence to stock `calculate_sigmas` at features-off, model calls == steps for every
+step count, SIGMAS validation accept/reject table, restart variance balance, guidance
+window exactness + variety cond switch, bit-exactness of untouched conditioning taps,
+`corr(lf′, lf) = √(1−a²)` for the LF re-composition, in-loop variety == `lf_recompose`
+of the boundary state, terminal extrapolation formula, the preset → `run_sampling`
+contract (RAW CFG, INPUT_TYPES backward compatibility), tile grid / feather / merge
+identities (`test_tiling`), the masked-run single-lifecycle rule (`test_sampling`), Save
+Image naming / collision / metadata (`test_save`), and the Face Detailer geometry, retry
+policy, keep-best choice, seed range and `build_face_model` boost (`test_face`).
 
 ```sh
 "<ComfyUI>/python_embeded/python.exe" tests/run_tests.py
 ```
+
+Last run before 1.6.1 was tagged: `ALL 9 TEST FILES PASSED` on ComfyUI 0.30.1
+(torch 2.9 / cu130 / cp313 portable).
 
 ## Changelog
 
@@ -498,6 +592,19 @@ the preset → `run_sampling` contract (RAW CFG, INPUT_TYPES backward compatibil
   (centroid of the found faces); with a reference the retries keep the pass denoise and
   explore seeds. `face_positive` tooltip / README: a short trigger prompt measured lower
   than the scene positive, leave it unconnected. Report lines for all three.
+- Fix, "confetti ring" — coloured speckle in the feather band of a detailed face. A
+  `noise_mask` must never cross a phase-model split (comfy's `KSamplerX0Inpaint` re-noises
+  the unmasked band from the source with the original noise; segment 2+ handed it the
+  mid-trajectory state and zero noise). Engine: a masked run collapses to one lifecycle on
+  the longest phase's model (console note); Face Detailer: the crop pass always runs on the
+  plan's texture patcher, no split. Reproduced deterministically before the fix
+  (`retry_max=1`, denoise 0.45 → σ₀ 0.658); regression test in `test_sampling.py`.
+- Fix: per-face / per-attempt seeds (`seed + batch + face·7919 + pass·104729 +
+  retry·retry_seed_step`, masked to 64 bits) — a seed near the top of the range no longer
+  overflows comfy's RNG.
+- README: Upscale v2 in the node table, Encode / Save Image / Empty Latent sizes
+  documented, Sampler table completed (`restart_enhance`, `texture_model`, `coherence`),
+  masked-run rule under Phase models, installation matrix of optional dependencies.
 
 **1.6.0**
 - `KreaPhoton Face Detailer` node (`face_detailer.py`, `face_geometry.py`, `face_detect.py`):
@@ -521,8 +628,9 @@ the preset → `run_sampling` contract (RAW CFG, INPUT_TYPES backward compatibil
 **1.4.0** (experimental features, each behind an off-by-default switch)
 - Phase models: `texture_model` input (restart / texture phase) next to `clean_model`
   (composition) — LoRA phase scheduling that works on quantized checkpoints.
-- `KreaPhoton LoRA Phase` node: LoRA active only in one schedule phase (comfy weight hooks
-  with σ keyframes; bf16 checkpoints only).
+- `KreaPhoton LoRA Phase` node: LoRA active only in one schedule phase (shipped as comfy
+  weight hooks with σ keyframes, bf16 checkpoints only; replaced in 1.4.1 by the plan →
+  phase-models mechanism described above, which also covers int8 / fp8 checkpoints).
 - Perturbed-attention guidance on the Advanced node (`pag_*`).
 - `restart_enhance`: DLSS 5 Photoreal Enhance V2 at the restart boundary (needs the
   `ComfyUI-dlss-enhancer` pack and `vae`).
