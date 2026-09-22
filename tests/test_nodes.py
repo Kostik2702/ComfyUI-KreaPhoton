@@ -180,10 +180,11 @@ def main():
     print("[5] NODE_CLASS_MAPPINGS")
     expected = {"KreaPhotonSampler", "KreaPhotonSamplerAdvanced", "KreaPhotonScheduler",
                 "KreaPhotonEmptyLatent", "KreaPhotonEncode", "KreaPhotonSaveImage", "KreaPhotonLoraPhase",
-                "KreaPhotonUpscale", "KreaPhotonUpscaleV2", "KreaPhotonFaceDetailer"}
+                "KreaPhotonUpscale", "KreaPhotonUpscaleV2", "KreaPhotonFaceDetailer",
+                "KreaPhotonCompositionDrafts"}
     assert set(nodes.NODE_CLASS_MAPPINGS.keys()) == expected
     assert set(nodes.NODE_DISPLAY_NAME_MAPPINGS.keys()) == expected
-    print("     10/10 nodes registered with display names")
+    print("     11/11 nodes registered with display names")
 
     # --- (6) v1.4: resolution-aware shift through the simple node ---
     print("[6] simple node: resolution-aware alpha (L unchanged, S softer)")

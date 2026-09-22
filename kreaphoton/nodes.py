@@ -818,6 +818,7 @@ class KreaPhotonUpscale:
 
 from .upscale_v2 import KreaPhotonUpscaleV2  # noqa: E402  (imports nodes.py helpers lazily inside methods)
 from .face_detailer import KreaPhotonFaceDetailer  # noqa: E402  (same pattern)
+from .composition import KreaPhotonCompositionDrafts  # noqa: E402  (same pattern)
 
 NODE_CLASS_MAPPINGS.update({
     "KreaPhotonSampler": KreaPhotonSampler,
@@ -830,6 +831,7 @@ NODE_CLASS_MAPPINGS.update({
     "KreaPhotonUpscale": KreaPhotonUpscale,
     "KreaPhotonUpscaleV2": KreaPhotonUpscaleV2,
     "KreaPhotonFaceDetailer": KreaPhotonFaceDetailer,
+    "KreaPhotonCompositionDrafts": KreaPhotonCompositionDrafts,
 })
 NODE_DISPLAY_NAME_MAPPINGS.update({
     "KreaPhotonSampler": "KreaPhoton Sampler",
@@ -842,4 +844,5 @@ NODE_DISPLAY_NAME_MAPPINGS.update({
     "KreaPhotonUpscale": "KreaPhoton Upscale",
     "KreaPhotonUpscaleV2": "KreaPhoton Upscale v2",
     "KreaPhotonFaceDetailer": "KreaPhoton Face Detailer",
+    "KreaPhotonCompositionDrafts": "KreaPhoton Composition Drafts",
 })

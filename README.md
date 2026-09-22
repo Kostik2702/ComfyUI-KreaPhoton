@@ -12,7 +12,7 @@ cycle), not copied from SD/SDXL folklore.
 > either do nothing or actively break it. This pack is the result of measuring what
 > actually works on this exact model.
 
-Current version **1.7.0** — ten nodes, one engine (`kreaphoton/sampling.py`), MIT.
+Current version **1.7.0** — eleven nodes, one engine (`kreaphoton/sampling.py`), MIT.
 Everything that is measured is labeled measured; everything that is a design hypothesis
 is labeled as such, in the README and in `presets.py`.
 
@@ -32,6 +32,7 @@ is labeled as such, in the README and in `presets.py`.
 | **KreaPhoton Upscale** | Faithful tiled ×1.25–×2.0 upscale with the same Krea 2 model: latent tiles re-blended every step (no seams), back-projection to the source (the downscaled result *is* the source), presets only, optional SR-model base. |
 | **KreaPhoton Upscale v2** | The same faithful refine plus empty-tile skipping, per-step grid shift and optional noise inversion; its own preset calibration (`polish` / `detail` / `strong`), shipped separately so v1 stays as calibrated. |
 | **KreaPhoton Face Detailer** | YOLO face detection → the `max_faces` largest faces redrawn at 1024 → 1536 px with the same sampler on the LoRA plan's texture model (identity LoRAs boosted ×1.5), ArcFace identity gate with keep-best retry, feathered paste. Presets `subtle` / `standard` / `strong`. |
+| **KreaPhoton Composition Drafts** | Pick the composition before paying for the image: N seeds × the first `draft_calls` model calls of the preset (default 2 — the subject's placement and framing are decided by the first two calls, within 2 % of the finished frame), x0 readout decoded into a labelled contact sheet, YOLO layout verifier (faces / persons / hands, subject third, shot type) against an optional JSON spec, `best_seed` out. The chosen seed reproduces bit-exactly in the Sampler. |
 
 Typical pipeline: `Empty Latent` + `Encode` → `LoRA Phase` (one per LoRA) → `Sampler` →
 `VAEDecode` → `Upscale v2` → `Face Detailer` → `Save Image`. Every IMAGE-stage node takes
@@ -372,6 +373,43 @@ collision the counter continues past it), unique across runs. The folder browser
 directory the ComfyUI process can read. Local use only; do not expose a `--listen` server
 with this pack installed.
 
+### KreaPhoton Composition Drafts
+
+Pick the composition before paying for the image. Same inputs as the Sampler's composition
+phase (`model`, `positive`, `latent_image`, `vae`, `seed`, `preset`, `variety`; optional
+`negative`, `clean_model`, `coherence`) plus `n_drafts` (1–16), `draft_calls`, `seed_step`
+(draft *i* uses `seed + i × seed_step`) and an optional JSON `layout`. For every candidate
+seed the node runs only the first `draft_calls` model calls of the preset's schedule and
+takes the last call's x0 estimate as the draft (the plunge readout of a distilled model),
+decodes it, scores it, and renders a labelled contact sheet (also shown on the node).
+Outputs: `sheet`, `drafts` (the full-size batch), `best_seed`, `report`. Wire `best_seed`
+into the Sampler's `seed` (or read any seed off the sheet): the head ran the same schedule
+prefix, noise, guider, ancestral RNG stream and detail envelope as the Sampler's full run,
+so the chosen composition reproduces there bit-exactly (`blend` / `seed_b` are the one
+Sampler input the drafts do not mirror).
+
+**How early is the layout readable?** Measured 2026-09-22 on the owner's café scene
+(turbo/candid, 2.1 MP, six seeds; `research/composition_probe`): after **2 calls** (σ 0.985,
+1/8 of the 16-call schedule, ~5 s a draft on an RTX 5090) pose, framing and shot are
+readable, and the subject's person / face boxes sit within **2 % of the frame** of where the
+finished image (the full Sampler on the same seed) puts them — depth 4 within 1 %, the full
+phase (8 calls, σ 0.867) within 0.7 %. What settles deeper is secondary: furniture, the
+counter's angle, background people, hands. Where the subject stands and how the shot is
+framed is decided by the first two model calls — hence the default `draft_calls` 2; `0`
+runs the whole phase above σ 0.85 (half the schedule).
+
+**Layout verifier.** `layout` keys, all optional: `faces` / `persons` / `hands` (expected
+counts; YOLO `face_yolov8m`, `person_yolov8m-seg`, `hand_yolov8n` from
+`models/ultralytics/{bbox,segm}`), `subject` (`left` / `center` / `right` — the horizontal
+third of the largest person, else face), `shot` (`closeup` / `medium` / `full` from the
+largest face height: ≥ 0.28 / ≥ 0.10 of the image — CALIBRATE placeholders). Score = mean
+over the given keys (counts `1 − 0.5·|diff|`, categories 1/0); the best score wins, ties go
+to the earlier draft, near-duplicate layouts (16 × 16 luminance thumbnails closer than 0.06
+RMS) rank after the originals and are flagged `DUP of #k`. Faces and persons detect from
+depth 2, hands only from depth 4; `persons` counts background pedestrians once the draft is
+deep enough to show them — leave it out for scenes with people behind the subject. No spec
+= no ranking, `best_seed` is the first draft.
+
 ---
 
 ## Quick start
@@ -593,6 +631,19 @@ Last run before 1.6.1 was tagged: `ALL 9 TEST FILES PASSED` on ComfyUI 0.30.1
 ## Changelog
 
 **1.7.0**
+- New node **KreaPhoton Composition Drafts** (`kreaphoton/composition.py`): N candidate
+  seeds × the first `draft_calls` model calls of the preset's schedule (a truncated head
+  with a terminal plunge = the x0 readout), decoded into a labelled contact sheet with an
+  on-node preview; a YOLO layout verifier (face / person / hand detectors: counts, the
+  subject's horizontal third, the shot type from the face height) scores every draft
+  against an optional JSON `layout` spec, near-duplicate layouts are flagged, `best_seed`
+  is returned for the Sampler. The head runs the same schedule prefix, noise, guider, RNG
+  stream and detail envelope as the Sampler's full run (`run_sampling(progress_total=)`),
+  so the picked seed reproduces there. Measured on the owner's café scene (six seeds,
+  turbo/candid, 2.1 MP): after **2 calls** (σ 0.985, 1/8 of the schedule, ~5 s a draft)
+  the subject's person / face boxes are within 2 % of the frame of the finished image
+  (depth 4: 1 %); furniture, background people and hands settle deeper. Detector lookup
+  now also covers `models/ultralytics/segm`.
 - Face Detailer: `ref_mean_guidance` switch (experimental, default off). Reference-mean
   guidance (arXiv 2605.10302) transplanted onto the face pass: `kreaphoton/ref_mean.py`
   (closed-form posterior mean over the VAE latents of the reference face crops, x0 shift

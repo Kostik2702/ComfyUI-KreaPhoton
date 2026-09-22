@@ -46,7 +46,7 @@ def _bbox_folder_candidates(models_dir: str, registered):
     'ultralytics_bbox' folders (Impact Subpack registers it), then the conventional
     models/ultralytics/bbox, then models/ultralytics."""
     out = list(registered or [])
-    for sub in (("ultralytics", "bbox"), ("ultralytics",)):
+    for sub in (("ultralytics", "bbox"), ("ultralytics", "segm"), ("ultralytics",)):
         p = os.path.join(models_dir, *sub)
         if p not in out:
             out.append(p)

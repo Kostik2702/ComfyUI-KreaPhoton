@@ -18,6 +18,7 @@ TESTS = [
     "test_save.py",
     "test_nodes.py",
     "test_face.py",
+    "test_composition.py",
 ]
 
 

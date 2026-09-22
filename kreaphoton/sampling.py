@@ -540,8 +540,13 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *, seed,
                  guidance_rescale=0.0, pag_scale=0.0, pag_lo=0.72, pag_hi=0.93, pag_blocks="8-15",
                  restart_hook=None, texture_model=None, texture_start=0.65,
                  coherence_jump=0.0, coherence_jump_sigma=0.93, tiler=None, x0_hook=None,
-                 ref_hook=None):
+                 ref_hook=None, progress_total=0):
     """Shared entry point for all KreaPhoton sampler nodes.
+
+    progress_total (Composition Drafts, 2026-09-22): the step count of the FULL
+    schedule this call is a prefix of, so a truncated head integrates the same
+    detail-envelope sigma_model sequence as the full run (single-segment path only;
+    a phase split computes its own). 0 = this schedule's own length.
 
     tiler / x0_hook (v1.5 Upscale): forwarded to every segment's loop (see
     kreaphoton_sampler_loop) - the tiled model call and the LF anchor apply to
@@ -615,7 +620,7 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *, seed,
                         seed=seed, noise=noise, add_noise=add_noise,
                         variety_a_latent=variety_a_latent if variety_idx is not None else 0.0,
                         variety_state="pending" if variety_idx is not None else "off",
-                        coherence_jump=kw_jump, **vkw, **kw)
+                        coherence_jump=kw_jump, progress_total=int(progress_total), **vkw, **kw)
 
     cur = latent_dict
     cur_noise, cur_add = noise, add_noise
