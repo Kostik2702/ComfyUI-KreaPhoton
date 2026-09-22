@@ -12,7 +12,7 @@ cycle), not copied from SD/SDXL folklore.
 > either do nothing or actively break it. This pack is the result of measuring what
 > actually works on this exact model.
 
-Current version **1.6.1** — ten nodes, one engine (`kreaphoton/sampling.py`), MIT.
+Current version **1.7.0** — ten nodes, one engine (`kreaphoton/sampling.py`), MIT.
 Everything that is measured is labeled measured; everything that is a design hypothesis
 is labeled as such, in the README and in `presets.py`.
 
@@ -260,7 +260,16 @@ unconnected unless the scene prompt says nothing about the face; the report note
 connected), `reference_image` — photo(s) of the character, a batch of several is best: identity
 is measured against the mean of their embeddings, retries explore seeds at the pass denoise,
 and the original face is kept if the redraw loses likeness, `upscale_model` — SR model to
-enlarge the crop (else lanczos), `tune` — JSON overrides. Outputs: `image`, `mask` (union of
+enlarge the crop (else lanczos), `tune` — JSON overrides, `ref_mean_guidance` — **experimental**
+switch (default off = bit-exact): reference-mean guidance ("Follow the Mean", arXiv 2605.10302)
+on the face pass — the sampler's x0 estimate is pulled (β 0.4, σ ≥ 0.4, faded out by σ 0.2)
+toward the posterior mean of the `reference_image` face crops, VAE-encoded with the same crop
+geometry; the vote and the shift are confined to the face mask. Measured 2026-09-22 on a
+character LoRA (three seeds, ArcFace to the LoRA's 120 training faces): 0.660 → 0.674, per-seed
+−0.014…+0.038 — **no likeness gain beyond seed noise**; the exact posterior (`rm_tau` 1) is a
+hard argmax toward one reference and hurts (gate 0.678 → 0.637 at β 0.4), β 0.7 visibly blurs
+the face toward the mean. Kept as a knob for further experiments (`tune` keys `rm_beta`,
+`rm_lo`, `rm_hi`, `rm_tau`, `rm_pass`); the report line names it. Outputs: `image`, `mask` (union of
 the pasted faces, for chaining), `report` (per face: bbox, every attempt's denoise / seed /
 id_sim, the verdict; also printed to the console).
 
@@ -582,6 +591,17 @@ Last run before 1.6.1 was tagged: `ALL 9 TEST FILES PASSED` on ComfyUI 0.30.1
 (torch 2.9 / cu130 / cp313 portable).
 
 ## Changelog
+
+**1.7.0**
+- Face Detailer: `ref_mean_guidance` switch (experimental, default off). Reference-mean
+  guidance (arXiv 2605.10302) transplanted onto the face pass: `kreaphoton/ref_mean.py`
+  (closed-form posterior mean over the VAE latents of the reference face crops, x0 shift
+  inside the face mask, β ramp over σ) and a new `ref_hook` seam in the sampler loop (sees
+  the loop state and the true σ, unlike `x0_hook`; `None` is bit-exact). Measured on a
+  character LoRA over three seeds: no likeness gain beyond seed noise (+0.014, spread
+  −0.014…+0.038); the exact posterior is an argmax toward one reference and hurts. Shipped
+  off by default so the experiment is reproducible, not because it helps. Tests:
+  `test_face.test_ref_mean`, `test_sampling` [15] ref_hook.
 
 **1.6.1**
 - Face Detailer: `identity_boost` (default 1.5) — the plan's identity LoRAs (`all` /

@@ -494,6 +494,21 @@ def main():
         "a zeroing hook drives the final x (== last denoised) to 0"
     print("     8 calls; None / identity bit-exact; 2x2 tiles allclose; hook sees sigma %.3f .. %.3f"
           % (seen[0], seen[-1]))
+    # ref_hook (ref_mean spike): None / identity bit-exact; sees the loop STATE x and the TRUE
+    # sigma s_cur (not the detail-nudged sigma_model); base_model None under a mock
+    seen_ref = []
+
+    def ref_hook(x, d, s, base_model):
+        seen_ref.append((tuple(x.shape), float(s), base_model))
+        return d
+    m_f, _ = make_recording_model()
+    same3 = smp.kreaphoton_sampler_loop(m_f, x0_t.clone(), sig_ref, order=2, eta0=0.0, restart_seed=3,
+                                        detail_amount=0.5, ref_hook=ref_hook)
+    assert torch.equal(ref, same3), "identity ref_hook must be bit-exact"
+    assert len(seen_ref) == 8 and all(sh == (1, 16, 1, 36, 44) and bm is None for sh, _, bm in seen_ref)
+    assert [s for _, s, _ in seen_ref] == [float(v) for v in sig_ref[:-1]], "ref_hook sees s_cur, not sigma_model"
+    assert seen != [s for _, s, _ in seen_ref], "with detail_amount 0.5 sigma_model differs from s_cur"
+    print("     ref_hook: identity bit-exact, sees x and the true sigma")
 
     # --- (16) v2 noise inversion: invert then descend on the same grid returns the start ---
     print("[16] kreaphoton_invert_loop round trip (bounded-velocity mock: x0_hat -> x as sigma -> 0)")

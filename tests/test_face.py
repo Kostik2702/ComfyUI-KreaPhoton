@@ -351,7 +351,8 @@ def test_node():
     it = fdl.KreaPhotonFaceDetailer.INPUT_TYPES()
     assert list(it["required"]) == ["model", "positive", "image", "vae", "seed", "preset", "max_faces", "identity_boost"]
     assert it["required"]["identity_boost"][1]["default"] == 1.5
-    assert list(it["optional"]) == ["negative", "face_positive", "reference_image", "upscale_model", "tune"]
+    assert list(it["optional"]) == ["negative", "face_positive", "reference_image", "upscale_model", "tune",
+                                    "ref_mean_guidance"]
     print("  [7] node control flow with fakes ... ok")
 
 
@@ -401,7 +402,110 @@ def main():
     test_detect_helpers()
     test_node()
     test_face_model()
+    test_ref_mean()
     print("test_face: ALL PASSED")
+
+
+def test_ref_mean():
+    """ref_mean.py (spike 2026-09-22): beta 0 / below the ramp is bit-exact; the
+    posterior picks the nearest reference at low sigma and flattens with tau; the
+    shift is confined to the mask; the bank builder crops the largest face."""
+    import torch
+    rm = importlib.import_module("kreaphoton.ref_mean")
+    torch.manual_seed(0)
+    r0 = torch.randn(1, 16, 1, 8, 8)
+    r1 = torch.randn(1, 16, 1, 8, 8)
+    bank = torch.cat([r0, r1], dim=0)
+    s = 0.3
+    x = (1.0 - s) * r0 + s * torch.randn_like(r0) * 0.1        # state near r0
+    den = torch.randn(1, 16, 1, 8, 8)
+    # ramp
+    assert rm.beta_at(0.1, 0.5, 0.2, 0.4) == 0.0 and rm.beta_at(0.5, 0.5, 0.2, 0.4) == 0.5
+    assert abs(rm.beta_at(0.3, 0.5, 0.2, 0.4) - 0.25) < 1e-9
+    # off = bit-exact (same object)
+    assert rm.ref_mean_shift(x, den, bank, s, beta=0.0, lo=0.2, hi=0.4) is den
+    assert rm.ref_mean_shift(x, den, bank, 0.1, beta=0.5, lo=0.2, hi=0.4) is den
+    # exact posterior at low sigma = nearest reference
+    w = rm.posterior_weights(x, bank, s)
+    assert abs(float(w.sum()) - 1.0) < 1e-5 and float(w[0]) > 0.99, w
+    # tau flattens toward uniform
+    w_flat = rm.posterior_weights(x, bank, s, tau=1e9)
+    assert abs(float(w_flat[0]) - 0.5) < 1e-3, w_flat
+    # full-beta shift lands on the weighted mean (here r0)
+    out = rm.ref_mean_shift(x, den, bank, 0.5, beta=1.0, lo=0.2, hi=0.4)
+    assert torch.allclose(out, r0, atol=1e-4), (out - r0).abs().max()
+    # mask confines the shift and drives the vote
+    mask = torch.zeros(1, 1, 1, 8, 8); mask[..., :4, :] = 1.0
+    out_m = rm.ref_mean_shift(x, den, bank, 0.5, beta=1.0, lo=0.2, hi=0.4, mask=mask)
+    assert torch.equal(out_m[..., 4:, :], den[..., 4:, :]) and torch.allclose(out_m[..., :4, :], r0[..., :4, :], atol=1e-4)
+    # hook object: normalises the bank through base_model.process_latent_in once, counts calls
+    class _BM:
+        n = 0
+        def process_latent_in(self, z):
+            _BM.n += 1
+            return z * 2.0
+    hook = rm.RefMeanHook(bank, mask, beta=1.0, lo=0.2, hi=0.4)
+    o1 = hook(x, den, 0.5, _BM()); o2 = hook(x, den, 0.5, _BM())
+    assert _BM.n == 1 and hook.calls == 2 and hook.last_weights.shape == (2,)
+    assert torch.allclose(o1[..., :4, :], (2.0 * bank)[int(hook.last_weights.argmax())][None, ..., :4, :], atol=1e-3)
+    assert hook(x, den, 0.05, _BM()) is den and hook.calls == 2, "below the ramp: untouched, not counted"
+    # bank with a different latent size is resampled to the state's
+    hook2 = rm.RefMeanHook(torch.cat([r0, r1], dim=0), None, beta=1.0, lo=0.2, hi=0.4)
+    o3 = hook2(torch.randn(1, 16, 1, 12, 10), torch.zeros(1, 16, 1, 12, 10), 0.5, None)
+    assert tuple(o3.shape) == (1, 16, 1, 12, 10)
+    # bank builder: largest face above threshold, crop geometry via crop_box, encode per image
+    fg = importlib.import_module("kreaphoton.face_geometry")
+    imgs = torch.rand(3, 256, 256, 3)
+    dets = {0: ([(10, 10, 60, 60), (100, 100, 220, 220)], [0.9, 0.9]), 1: ([], []), 2: ([(50, 50, 150, 150)], [0.3])}
+    seen = []
+
+    def detect(img, threshold):
+        seen.append(img.shape)
+        return dets[len(seen) - 1]
+    b, n, skipped = rm.build_reference_bank(
+        imgs, detect=detect, crop_box_fn=fg.crop_box, encode=lambda px: torch.zeros(1, 16, 1, px.shape[1] // 8, px.shape[2] // 8),
+        resize=lambda im, h, w: torch.zeros(1, h, w, 3), crop_factor=2.0, target_hw=(128, 128), align=16, bbox_threshold=0.45)
+    assert tuple(b.shape) == (1, 16, 1, 16, 16) and n == 1 and skipped == 2, (b.shape, n, skipped)
+    assert rm.build_reference_bank(imgs[1:2], detect=lambda i, threshold: ([], []), crop_box_fn=fg.crop_box, encode=None,
+                                   resize=None, crop_factor=2.0, target_hw=(128, 128), align=16, bbox_threshold=0.45)[0] is None
+    # the node switch: off -> no ref_hook even if tune sets rm_beta; on -> a RefMeanHook reaches run_sampling
+    # (bank built from the reference batch), tune rm_beta overrides the switch's 0.4; on without a reference -> warning
+    fdl = importlib.import_module("kreaphoton.face_detailer")
+    lp = importlib.import_module("kreaphoton.lora_phase")
+    calls = []
+
+    def fake_run_sampling(model, positive, negative, latent_dict, sigmas, **kw):
+        calls.append(kw)
+        return {"samples": latent_dict["samples"]}
+    fdl._run_sampling = fake_run_sampling
+    fdl._build_phase_models = lambda model, loader=None, apply_lora=None: (None, model, None)
+    fdl._detect = lambda image, **kw: ([(300, 100, 420, 240)], [0.9])
+    fdl._upscale = lambda image, scale, upscale_model=None: torch.nn.functional.interpolate(
+        image.movedim(-1, 1), size=(int(round(image.shape[1] * scale)), int(round(image.shape[2] * scale))),
+        mode="bilinear").movedim(1, -1)
+    fdl._gate = lambda: _FakeGate([], available=False)
+    node = fdl.KreaPhotonFaceDetailer()
+    img = torch.rand(1, 512, 768, 3)
+    refs = torch.rand(2, 512, 768, 3)
+    _, _, rep = node.detail(_FakeModel(name="raw"), "pos", img, _FakeVAE(), 5, "subtle", 1, identity_boost=1.0,
+                            reference_image=refs, tune='{"rm_beta":0.3}')
+    assert calls and calls[0].get("ref_hook") is None and "ref-mean" not in rep, "switch off must win over tune"
+    calls.clear()
+    _, _, rep = node.detail(_FakeModel(name="raw"), "pos", img, _FakeVAE(), 5, "subtle", 1, identity_boost=1.0,
+                            reference_image=refs, ref_mean_guidance=True)
+    hook = calls[0].get("ref_hook")
+    assert isinstance(hook, rm.RefMeanHook) and hook.beta == rm.REF_MEAN_EXPERIMENTAL_BETA and hook.tau == 1.0e5, hook
+    assert tuple(hook.bank_vae.shape) == (2, 16, 1, 1024 // 8, 1024 // 8), hook.bank_vae.shape
+    assert "ref-mean guidance (EXPERIMENTAL" in rep and "2 face crops encoded" in rep, rep
+    calls.clear()
+    _, _, rep = node.detail(_FakeModel(name="raw"), "pos", img, _FakeVAE(), 5, "subtle", 1, identity_boost=1.0,
+                            reference_image=refs, ref_mean_guidance=True, tune='{"rm_beta":0.15}')
+    assert calls[0]["ref_hook"].beta == 0.15, "tune rm_beta overrides the switch's default"
+    calls.clear()
+    _, _, rep = node.detail(_FakeModel(name="raw"), "pos", img, _FakeVAE(), 5, "subtle", 1, identity_boost=1.0,
+                            ref_mean_guidance=True)
+    assert calls[0].get("ref_hook") is None and "needs reference_image" in rep, rep
+    print("test_ref_mean: OK")
 
 
 if __name__ == "__main__":

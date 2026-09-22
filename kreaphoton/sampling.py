@@ -167,9 +167,15 @@ def kreaphoton_sampler_loop(model, x, sigmas, extra_args=None, callback=None, di
                             variety_state="off", x0_extrapolation=0.0,
                             progress_offset=0, progress_total=0, restart_hook=None,
                             coherence_jump=0.0, coherence_jump_sigma=0.93,
-                            tiler=None, x0_hook=None):
+                            tiler=None, x0_hook=None, ref_hook=None):
     """The KSAMPLER sampler_function. Pure numerical loop, testable with a mock
     model callable (tests/test_sampling.py).
+
+    ref_hook (2026-09-22 spike, ref_mean.py): optional callable(x, denoised,
+                   sigma, base_model) -> denoised applied after x0_hook; unlike
+                   x0_hook it also sees the loop STATE x and the true sigma of
+                   that state (not the detail-nudged sigma_model), which the
+                   reference-mean posterior needs. None = bit-exact.
 
     tiler (v1.5 Upscale): optional callable(model, x, sigma_model, extra_args)
                    -> denoised that replaces the single model call - tiling.LatentTiler
@@ -309,6 +315,9 @@ def kreaphoton_sampler_loop(model, x, sigmas, extra_args=None, callback=None, di
             denoised = model(x, sigma_model * s_in, **extra_args)
         if x0_hook is not None:
             denoised = x0_hook(denoised, sigma_model)
+        if ref_hook is not None:
+            base_model = getattr(getattr(model, "inner_model", None), "inner_model", None)
+            denoised = ref_hook(x, denoised, s_cur, base_model)
         if callback is not None:
             callback({"x": x, "i": i, "sigma": sigmas[i],
                       "sigma_hat": sigmas[i], "denoised": denoised})
@@ -391,7 +400,7 @@ def _run_one(model, positive, negative, latent_dict, sigmas, *, seed,
              variety_end=0.96, variety_seed=0, variety_state="off",
              progress_offset=0, progress_total=0, guidance_rescale=0.0,
              pag_scale=0.0, pag_lo=0.72, pag_hi=0.93, pag_blocks="8-15", restart_hook=None,
-             coherence_jump=0.0, coherence_jump_sigma=0.93, tiler=None, x0_hook=None):
+             coherence_jump=0.0, coherence_jump_sigma=0.93, tiler=None, x0_hook=None, ref_hook=None):
     latent = comfy.sample.fix_empty_latent_channels(model, latent_dict["samples"])
     if latent.ndim != 5 or latent.shape[1] != 16:
         raise ValueError(
@@ -420,7 +429,7 @@ def _run_one(model, positive, negative, latent_dict, sigmas, *, seed,
         "progress_offset": int(progress_offset), "progress_total": int(progress_total),
         "restart_hook": restart_hook,
         "coherence_jump": float(coherence_jump), "coherence_jump_sigma": float(coherence_jump_sigma),
-        "tiler": tiler, "x0_hook": x0_hook,
+        "tiler": tiler, "x0_hook": x0_hook, "ref_hook": ref_hook,
     })
 
     # One guider for every path: "off" is cond_scale 1.0 (stock cfg1 optimization,
@@ -530,7 +539,8 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *, seed,
                  variety_end=0.96, variety_cond_taps=(7, 8, 9, 10),
                  guidance_rescale=0.0, pag_scale=0.0, pag_lo=0.72, pag_hi=0.93, pag_blocks="8-15",
                  restart_hook=None, texture_model=None, texture_start=0.65,
-                 coherence_jump=0.0, coherence_jump_sigma=0.93, tiler=None, x0_hook=None):
+                 coherence_jump=0.0, coherence_jump_sigma=0.93, tiler=None, x0_hook=None,
+                 ref_hook=None):
     """Shared entry point for all KreaPhoton sampler nodes.
 
     tiler / x0_hook (v1.5 Upscale): forwarded to every segment's loop (see
@@ -564,7 +574,7 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *, seed,
               x0_extrapolation=x0_extrapolation, guidance_rescale=guidance_rescale,
               pag_scale=pag_scale, pag_lo=pag_lo, pag_hi=pag_hi, pag_blocks=pag_blocks,
               restart_hook=restart_hook, coherence_jump_sigma=coherence_jump_sigma,
-              tiler=tiler, x0_hook=x0_hook)
+              tiler=tiler, x0_hook=x0_hook, ref_hook=ref_hook)
     # the jump belongs to the first segment only (the step at/below its sigma
     # lives in the composition/identity head of the schedule); later segments
     # must not re-apply it

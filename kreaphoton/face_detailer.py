@@ -55,6 +55,7 @@ from .face_geometry import choose_best, crop_box, face_mask, paste, place_mask, 
 from .lora_phase import PLAN_KEY, build_face_model, build_phase_models
 from .presets import (DEFAULT_FACE_PRESET, FACE_COMMON, FACE_PRESETS, GUIDANCE, MANIFOLD_MEAN, MANIFOLD_STD,
                       preset_guidance, validate_face_presets)
+from .ref_mean import REF_MEAN_EXPERIMENTAL_BETA, RefMeanHook, build_reference_bank
 from .sampling import run_inversion, run_sampling
 from .schedules import ALPHA, SHIFT, alpha_for_latent, refine_schedule
 
@@ -78,7 +79,12 @@ _UPSCALE_MODEL_TOOLTIP = "Optional ESRGAN-class model to enlarge the crop before
 _TUNE_TOOLTIP = ("Calibration override, leave EMPTY. JSON keys: crop_factor, bbox_threshold, min_face_px, "
                  "feather, dilation, retry_max, retry_denoise_step, retry_seed_step, sampler, guidance, "
                  "detail_a, invert (0/1), id_threshold, guide1/denoise1/steps1, guide2/denoise2/steps2 "
-                 "(guide2=0 drops pass 2).")
+                 "(guide2=0 drops pass 2); with ref_mean_guidance on: rm_beta, rm_lo, rm_hi, rm_tau, rm_pass.")
+_REF_MEAN_TOOLTIP = ("EXPERIMENTAL reference-mean guidance (arXiv 2605.10302 on the face pass): the x0 estimate "
+                     "is pulled toward the posterior mean of the reference_image face crops in latent space "
+                     "(beta 0.4, flat mean). Measured 2026-09-22 on a character LoRA: no likeness gain beyond "
+                     "seed noise (+0.01 +-0.03 ArcFace); the exact posterior (rm_tau 1) is harmful. Needs "
+                     "reference_image; off = bit-exact.")
 
 _FACE_SEED_STRIDE = 7919      # per-face seed offset (prime) so faces do not share a noise draw
 _PASS_SEED_STRIDE = 104729    # per-pass seed offset
@@ -184,6 +190,8 @@ class KreaPhotonFaceDetailer:
                 "reference_image": ("IMAGE", {"tooltip": _REFERENCE_TOOLTIP}),
                 "upscale_model": ("UPSCALE_MODEL", {"tooltip": _UPSCALE_MODEL_TOOLTIP}),
                 "tune": ("STRING", {"default": "", "multiline": False, "tooltip": _TUNE_TOOLTIP}),
+                "ref_mean_guidance": ("BOOLEAN", {"default": False, "label_on": "experimental", "label_off": "off",
+                                                  "tooltip": _REF_MEAN_TOOLTIP}),
             },
         }
 
@@ -193,9 +201,13 @@ class KreaPhotonFaceDetailer:
     CATEGORY = "KreaPhoton"
 
     def detail(self, model, positive, image, vae, seed, preset, max_faces, identity_boost=1.5, negative=None,
-               face_positive=None, reference_image=None, upscale_model=None, tune=""):
+               face_positive=None, reference_image=None, upscale_model=None, tune="", ref_mean_guidance=False):
         from .nodes import LATENT_PX, ALIGN_PX, _ORDER_FROM_SAMPLER_NAME, _decode_tiled, _encode_tiled
         passes, id_threshold, c = apply_tune_face(FACE_PRESETS[preset], FACE_COMMON, tune)
+        if ref_mean_guidance and float(c["rm_beta"]) <= 0.0:
+            c["rm_beta"] = REF_MEAN_EXPERIMENTAL_BETA     # the switch: tune rm_beta (if set) still wins
+        elif not ref_mean_guidance:
+            c["rm_beta"] = 0.0                            # switch off = off, whatever tune says
         if c["sampler"] not in _ORDER_FROM_SAMPLER_NAME:
             raise ValueError(f"KreaPhoton Face Detailer: sampler must be one of {list(_ORDER_FROM_SAMPLER_NAME)}")
         order = _ORDER_FROM_SAMPLER_NAME[c["sampler"]]
@@ -227,6 +239,20 @@ class KreaPhotonFaceDetailer:
         if face_positive is not None:
             report.append("note: face_positive is connected - measured 2026-09-16, a short trigger prompt scored "
                           "lower on likeness than the scene positive; try it unconnected")
+        # reference-mean guidance (spike 2026-09-22, ref_mean.py): tune rm_beta > 0 + reference_image
+        rm_beta = float(c["rm_beta"])
+        rm_pass = int(c["rm_pass"])
+        if rm_pass not in (1, 2, 12):
+            raise ValueError(f"KreaPhoton Face Detailer: rm_pass must be 1, 2 or 12, got {rm_pass}")
+        rm_passes = {1: (1,), 2: (2,), 12: (1, 2)}[rm_pass]
+        if rm_beta > 0.0 and reference_image is None:
+            report.append("warning: rm_beta %.2f ignored - reference-mean guidance needs reference_image" % rm_beta)
+            rm_beta = 0.0
+        elif rm_beta > 0.0:
+            report.append("ref-mean guidance (EXPERIMENTAL, measured 2026-09-22: no likeness gain beyond seed noise): "
+                          "beta %.2f, sigma ramp %.2f-%.2f, tau %.3g, pass %d"
+                          % (rm_beta, float(c["rm_lo"]), float(c["rm_hi"]), float(c["rm_tau"]), rm_pass))
+        banks = {}   # (h_px, w_px) -> reference bank latent (built once per crop pixel size)
         ref_emb, ref_is_external = None, False
         if reference_image is not None and gate.available:
             ref_emb, n_ref = reference_embedding(gate, reference_image)
@@ -287,6 +313,22 @@ class KreaPhotonFaceDetailer:
                     alpha = alpha_for_latent(h, w, ALPHA) if SHIFT["resolution_aware"] else ALPHA
                     noise_mask = F.interpolate(mask_c.view(1, 1, side_h, side_w), size=(h, w), mode="area")
                     noise_mask = noise_mask.view(1, 1, 1, h, w).to(z.device)
+                    ref_hook = None
+                    if rm_beta > 0.0 and (pi + 1) in rm_passes:
+                        key = (int(px.shape[1]), int(px.shape[2]))
+                        if key not in banks:
+                            bank, n_used, n_skip = build_reference_bank(
+                                reference_image, detect=_detect, crop_box_fn=crop_box,
+                                encode=lambda im: _encode_tiled(vae, im), resize=_resize,
+                                crop_factor=float(c["crop_factor"]), target_hw=key, align=ALIGN_PX,
+                                bbox_threshold=float(c["bbox_threshold"]))
+                            banks[key] = bank
+                            lines.append("  ref-mean bank %dx%d px: %d face crops encoded%s"
+                                         % (key[1], key[0], n_used,
+                                            (", %d reference images without a face" % n_skip) if n_skip else ""))
+                        if banks[key] is not None:
+                            ref_hook = RefMeanHook(banks[key], noise_mask, beta=rm_beta, lo=float(c["rm_lo"]),
+                                                   hi=float(c["rm_hi"]), tau=float(c["rm_tau"]))
                     attempts, cands = [], []
                     base_seed = (int(seed) + b + fi * _FACE_SEED_STRIDE + pi * _PASS_SEED_STRIDE) & 0xffffffffffffffff
                     # with a reference the target is the character: retries explore seeds at the
@@ -314,7 +356,16 @@ class KreaPhotonFaceDetailer:
                             manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
                             detail_amount=float(c["detail_a"]), order=order,
                             eta0=0.0, sigma_gate=0.10,   # refine: ancestral noise = speckle (2026-07-07)
+                            ref_hook=ref_hook,
                         )
+                        if ref_hook is not None and ref_hook.last_weights is not None:
+                            wts = ref_hook.last_weights
+                            lines.append("  ref-mean pass %d attempt %d: acted on %d steps; last step top weight %.3f "
+                                         "(ref #%d of %d), entropy %.2f bits"
+                                         % (pi + 1, ai + 1, ref_hook.calls, float(wts.max()),
+                                            int(wts.argmax()) + 1, int(wts.numel()),
+                                            float(-(wts * (wts.clamp_min(1e-12)).log2()).sum())))
+                            ref_hook.calls = 0
                         cand = _decode_tiled(vae, out["samples"])[..., :3].clamp(0.0, 1.0)
                         sim = None
                         if gate_on:

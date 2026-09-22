@@ -478,6 +478,13 @@ FACE_COMMON = {
     "retry_seed_step": 1000,     # seed += step per retry (distilled: seed+1 is ~the same latent)
     "sampler": "euler", "guidance": "window", "detail_a": 0.0,
     "invert": 0,                 # 1 = inversion-anchored refine (Upscale v2 mechanism), unmeasured on faces
+    # reference-mean guidance (EXPERIMENTAL, ref_mean.py; the node's ref_mean_guidance switch turns it on
+    # with rm_beta 0.4; measured 2026-09-22: no likeness gain beyond seed noise). Needs reference_image.
+    "rm_beta": 0.0,              # 0 = off (bit-exact); the x0 shift toward the reference posterior mean
+    "rm_lo": 0.20,               # beta ramps from 0 at this sigma ...
+    "rm_hi": 0.40,               # ... to rm_beta at this sigma and above
+    "rm_tau": 1.0e5,             # posterior temperature: 1 = exact (argmax to one reference, harmful), 1e5 = flat mean
+    "rm_pass": 1,                # which pass(es) the shift acts in: 1, 2 or 12
 }
 FACE_GUIDE_MIN, FACE_GUIDE_MAX = 256, 2048
 
