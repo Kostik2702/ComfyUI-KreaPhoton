@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 340" width="900" height="340" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">
+<rect x="0.5" y="0.5" width="899" height="339" rx="8" fill="#f8f9f6" stroke="#d2d7d1"/>
+<text x="20.0" y="28.0" fill="#15181a" font-size="13" font-weight="600" text-anchor="start">Detail nudge per model call on turbo/quality (fraction of a step, detail 0.7)</text>
+<rect x="680.0" y="76.0" width="180.0" height="216.0" fill="#f3e3de"/>
+<text x="680.0" y="68.0" fill="#4b5155" font-size="11" font-weight="400" text-anchor="start">texture tail</text>
+<line x1="56.0" y1="292.0" x2="860.0" y2="292.0" stroke="#e1e5df" stroke-width="1"/>
+<text x="48.0" y="296.0" fill="#6f7578" font-size="11" font-weight="400" text-anchor="end">0.00</text>
+<line x1="56.0" y1="220.0" x2="860.0" y2="220.0" stroke="#e1e5df" stroke-width="1"/>
+<text x="48.0" y="224.0" fill="#6f7578" font-size="11" font-weight="400" text-anchor="end">0.25</text>
+<line x1="56.0" y1="148.0" x2="860.0" y2="148.0" stroke="#e1e5df" stroke-width="1"/>
+<text x="48.0" y="152.0" fill="#6f7578" font-size="11" font-weight="400" text-anchor="end">0.50</text>
+<line x1="56.0" y1="76.0" x2="860.0" y2="76.0" stroke="#e1e5df" stroke-width="1"/>
+<text x="48.0" y="80.0" fill="#6f7578" font-size="11" font-weight="400" text-anchor="end">0.75</text>
+<line x1="56.0" y1="292.0" x2="860.0" y2="292.0" stroke="#b8beb6" stroke-width="1"/>
+<text x="68.0" y="316.0" fill="#6f7578" font-size="11" font-weight="400" text-anchor="middle">1</text>
+<text x="224.0" y="316.0" fill="#6f7578" font-size="11" font-weight="400" text-anchor="middle">4</text>
+<text x="380.0" y="316.0" fill="#6f7578" font-size="11" font-weight="400" text-anchor="middle">7</text>
+<text x="536.0" y="316.0" fill="#6f7578" font-size="11" font-weight="400" text-anchor="middle">10</text>
+<text x="692.0" y="316.0" fill="#6f7578" font-size="11" font-weight="400" text-anchor="middle">13</text>
+<text x="848.0" y="316.0" fill="#6f7578" font-size="11" font-weight="400" text-anchor="middle">16</text>
+<text x="458.0" y="332.0" fill="#6f7578" font-size="11" font-weight="400" text-anchor="middle">model call</text>
+<path d="M68.0 292.0 L120.0 292.0 L172.0 292.0 L224.0 288.5 L276.0 269.4 L328.0 238.3 L380.0 200.6 L432.0 161.7 L484.0 126.7 L536.0 101.2 L588.0 90.5 L640.0 292.0 L692.0 212.3 L744.0 264.0 L796.0 291.1 L848.0 292.0" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="68.0" cy="292.0" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="120.0" cy="292.0" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="172.0" cy="292.0" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="224.0" cy="288.5" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="276.0" cy="269.4" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="328.0" cy="238.3" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="380.0" cy="200.6" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="432.0" cy="161.7" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="484.0" cy="126.7" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="536.0" cy="101.2" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="588.0" cy="90.5" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="640.0" cy="292.0" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="692.0" cy="212.3" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="744.0" cy="264.0" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="796.0" cy="291.1" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="848.0" cy="292.0" r="4.5" fill="#2a78d6" stroke="#f8f9f6" stroke-width="2"/>
+<path d="M68.0 292.0 L120.0 292.0 L172.0 291.9 L224.0 285.0 L276.0 266.7 L328.0 237.9 L380.0 201.0 L432.0 159.7 L484.0 120.6 L536.0 94.1 L588.0 92.9 L640.0 292.0 L692.0 221.0 L744.0 292.0 L796.0 292.0 L848.0 292.0" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="68.0" cy="292.0" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="120.0" cy="292.0" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="172.0" cy="291.9" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="224.0" cy="285.0" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="276.0" cy="266.7" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="328.0" cy="237.9" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="380.0" cy="201.0" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="432.0" cy="159.7" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="484.0" cy="120.6" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="536.0" cy="94.1" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="588.0" cy="92.9" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="640.0" cy="292.0" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="692.0" cy="221.0" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="744.0" cy="292.0" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="796.0" cy="292.0" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="848.0" cy="292.0" r="4.5" fill="#1baf7a" stroke="#f8f9f6" stroke-width="2"/>
+<path d="M68.0 292.0 L120.0 292.0 L172.0 292.0 L224.0 292.0 L276.0 292.0 L328.0 292.0 L380.0 291.7 L432.0 288.1 L484.0 280.3 L536.0 267.9 L588.0 250.6 L640.0 292.0 L692.0 154.2 L744.0 91.0 L796.0 179.3 L848.0 292.0" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="68.0" cy="292.0" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="120.0" cy="292.0" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="172.0" cy="292.0" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="224.0" cy="292.0" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="276.0" cy="292.0" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="328.0" cy="292.0" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="380.0" cy="291.7" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="432.0" cy="288.1" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="484.0" cy="280.3" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="536.0" cy="267.9" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="588.0" cy="250.6" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="640.0" cy="292.0" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="692.0" cy="154.2" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="744.0" cy="91.0" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="796.0" cy="179.3" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<circle cx="848.0" cy="292.0" r="4.5" fill="#eb6834" stroke="#f8f9f6" stroke-width="2"/>
+<text x="754.0" y="95.0" fill="#4b5155" font-size="11" font-weight="400" text-anchor="start">rejected 0.70</text>
+<text x="536.0" y="84.6" fill="#4b5155" font-size="11" font-weight="400" text-anchor="end">v1 = shipped, peak 0.69</text>
+<line x1="20.0" y1="50.0" x2="36.0" y2="50.0" stroke="#2a78d6" stroke-width="2"/>
+<text x="42.0" y="54.0" fill="#4b5155" font-size="11" font-weight="400" text-anchor="start">v1 step envelope</text>
+<line x1="184.0" y1="50.0" x2="200.0" y2="50.0" stroke="#1baf7a" stroke-width="2"/>
+<text x="206.0" y="54.0" fill="#4b5155" font-size="11" font-weight="400" text-anchor="start">sigma envelope, shipped</text>
+<line x1="397.0" y1="50.0" x2="413.0" y2="50.0" stroke="#eb6834" stroke-width="2"/>
+<text x="419.0" y="54.0" fill="#4b5155" font-size="11" font-weight="400" text-anchor="start">sigma envelope, rejected</text>
+</svg>

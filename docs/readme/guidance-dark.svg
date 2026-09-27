@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 320" width="900" height="320" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">
+<rect x="0.5" y="0.5" width="899" height="319" rx="8" fill="#171a1b" stroke="#2b3032"/>
+<text x="20.0" y="28.0" fill="#eceee9" font-size="13" font-weight="600" text-anchor="start">Guidance scale g(sigma) with delta 1.25, sigma in the order the sampler visits it</text>
+<rect x="136.4" y="70.0" width="160.8" height="206.0" fill="#1e2223"/>
+<line x1="56.0" y1="261.8" x2="860.0" y2="261.8" stroke="#24292b" stroke-width="1"/>
+<text x="48.0" y="265.8" fill="#8a918e" font-size="11" font-weight="400" text-anchor="end">1.00</text>
+<line x1="56.0" y1="190.8" x2="860.0" y2="190.8" stroke="#24292b" stroke-width="1"/>
+<text x="48.0" y="194.8" fill="#8a918e" font-size="11" font-weight="400" text-anchor="end">1.50</text>
+<line x1="56.0" y1="119.7" x2="860.0" y2="119.7" stroke="#24292b" stroke-width="1"/>
+<text x="48.0" y="123.7" fill="#8a918e" font-size="11" font-weight="400" text-anchor="end">2.00</text>
+<line x1="56.0" y1="84.2" x2="860.0" y2="84.2" stroke="#24292b" stroke-width="1"/>
+<text x="48.0" y="88.2" fill="#8a918e" font-size="11" font-weight="400" text-anchor="end">2.25</text>
+<text x="56.0" y="302.0" fill="#8a918e" font-size="11" font-weight="400" text-anchor="middle">sigma 1.0</text>
+<text x="136.4" y="302.0" fill="#8a918e" font-size="11" font-weight="400" text-anchor="middle">sigma 0.9</text>
+<text x="216.8" y="302.0" fill="#8a918e" font-size="11" font-weight="400" text-anchor="middle">sigma 0.8</text>
+<text x="297.2" y="302.0" fill="#8a918e" font-size="11" font-weight="400" text-anchor="middle">sigma 0.7</text>
+<text x="377.6" y="302.0" fill="#8a918e" font-size="11" font-weight="400" text-anchor="middle">sigma 0.6</text>
+<text x="538.4" y="302.0" fill="#8a918e" font-size="11" font-weight="400" text-anchor="middle">sigma 0.4</text>
+<text x="699.2" y="302.0" fill="#8a918e" font-size="11" font-weight="400" text-anchor="middle">sigma 0.2</text>
+<text x="860.0" y="302.0" fill="#8a918e" font-size="11" font-weight="400" text-anchor="middle">sigma 0.0</text>
+<line x1="56.0" y1="261.8" x2="860.0" y2="261.8" stroke="#3b4144" stroke-width="1"/>
+<path d="M56.0 84.2 L64.0 84.2 L72.1 84.2 L80.1 84.2 L88.2 84.2 L96.2 84.2 L104.2 84.2 L112.3 84.2 L120.3 84.2 L128.4 84.2 L136.4 84.2 L144.4 85.5 L152.5 89.2 L160.5 95.0 L168.6 102.7 L176.6 112.0 L184.6 122.6 L192.7 134.2 L200.7 146.7 L208.8 159.7 L216.8 173.0 L224.8 186.3 L232.9 199.3 L240.9 211.8 L249.0 223.4 L257.0 234.0 L265.0 243.3 L273.1 251.0 L281.1 256.8 L289.2 260.5 L297.2 261.8 L305.2 261.8 L313.3 261.8 L321.3 261.8 L329.4 261.8 L337.4 261.8 L345.4 261.8 L353.5 261.8 L361.5 261.8 L369.6 261.8 L377.6 261.8 L385.6 261.8 L393.7 261.8 L401.7 261.8 L409.8 261.8 L417.8 261.8 L425.8 261.8 L433.9 261.8 L441.9 261.8 L450.0 261.8 L458.0 261.8 L466.0 261.8 L474.1 261.8 L482.1 261.8 L490.2 261.8 L498.2 261.8 L506.2 261.8 L514.3 261.8 L522.3 261.8 L530.4 261.8 L538.4 261.8 L546.4 261.8 L554.5 261.8 L562.5 261.8 L570.6 261.8 L578.6 261.8 L586.6 261.8 L594.7 261.8 L602.7 261.8 L610.8 261.8 L618.8 261.8 L626.8 261.8 L634.9 261.8 L642.9 261.8 L651.0 261.8 L659.0 261.8 L667.0 261.8 L675.1 261.8 L683.1 261.8 L691.2 261.8 L699.2 261.8 L707.2 261.8 L715.3 261.8 L723.3 261.8 L731.4 261.8 L739.4 261.8 L747.4 261.8 L755.5 261.8 L763.5 261.8 L771.6 261.8 L779.6 261.8 L787.6 261.8 L795.7 261.8 L803.7 261.8 L811.8 261.8 L819.8 261.8 L827.8 261.8 L835.9 261.8 L843.9 261.8 L852.0 261.8 L860.0 261.8" fill="none" stroke="#3987e5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M56.0 261.8 L64.0 261.8 L72.1 261.8 L80.1 261.8 L88.2 261.8 L96.2 261.8 L104.2 261.8 L112.3 261.8 L120.3 261.8 L128.4 261.8 L136.4 261.8 L144.4 257.4 L152.5 244.8 L160.5 225.2 L168.6 200.4 L176.6 173.0 L184.6 145.6 L192.7 120.8 L200.7 101.2 L208.8 88.6 L216.8 84.2 L224.8 88.6 L232.9 101.2 L240.9 120.8 L249.0 145.6 L257.0 173.0 L265.0 200.4 L273.1 225.2 L281.1 244.8 L289.2 257.4 L297.2 261.8 L305.2 261.8 L313.3 261.8 L321.3 261.8 L329.4 261.8 L337.4 261.8 L345.4 261.8 L353.5 261.8 L361.5 261.8 L369.6 261.8 L377.6 261.8 L385.6 261.8 L393.7 261.8 L401.7 261.8 L409.8 261.8 L417.8 261.8 L425.8 261.8 L433.9 261.8 L441.9 261.8 L450.0 261.8 L458.0 261.8 L466.0 261.8 L474.1 261.8 L482.1 261.8 L490.2 261.8 L498.2 261.8 L506.2 261.8 L514.3 261.8 L522.3 261.8 L530.4 261.8 L538.4 261.8 L546.4 261.8 L554.5 261.8 L562.5 261.8 L570.6 261.8 L578.6 261.8 L586.6 261.8 L594.7 261.8 L602.7 261.8 L610.8 261.8 L618.8 261.8 L626.8 261.8 L634.9 261.8 L642.9 261.8 L651.0 261.8 L659.0 261.8 L667.0 261.8 L675.1 261.8 L683.1 261.8 L691.2 261.8 L699.2 261.8 L707.2 261.8 L715.3 261.8 L723.3 261.8 L731.4 261.8 L739.4 261.8 L747.4 261.8 L755.5 261.8 L763.5 261.8 L771.6 261.8 L779.6 261.8 L787.6 261.8 L795.7 261.8 L803.7 261.8 L811.8 261.8 L819.8 261.8 L827.8 261.8 L835.9 261.8 L843.9 261.8 L852.0 261.8 L860.0 261.8" fill="none" stroke="#d95926" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="56.0" y="74.2" fill="#b3b9b5" font-size="11" font-weight="400" text-anchor="start">window (shipped): full 2.25 above sigma 0.9</text>
+<text x="313.3" y="133.9" fill="#b3b9b5" font-size="11" font-weight="400" text-anchor="start">band (experimental): peak 2.25 at 0.8, 1.0 outside 0.7-0.9</text>
+<line x1="610.0" y1="46.0" x2="626.0" y2="46.0" stroke="#3987e5" stroke-width="2"/>
+<text x="632.0" y="50.0" fill="#b3b9b5" font-size="11" font-weight="400" text-anchor="start">window</text>
+<line x1="710.0" y1="46.0" x2="726.0" y2="46.0" stroke="#d95926" stroke-width="2"/>
+<text x="732.0" y="50.0" fill="#b3b9b5" font-size="11" font-weight="400" text-anchor="start">band</text>
+</svg>
