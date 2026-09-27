@@ -261,6 +261,73 @@ def main():
         comfy.samplers.sampling_function = real_sampling_function
     print("     blocks parsed, options cloned not mutated, identity output == v over heads, window gating, hook math")
 
+    # --- (9) Sampler v2: "band" guidance (sin^2 inside (lo, hi), exactly 1.0 outside) next to
+    #         the legacy M6 ramp, which stays bit-identical (it is the V1-calibrated policy) ---
+    print("[9] g_band: finite symmetric band; window keeps the M6 ramp")
+    for sigma in (0.0, 0.5, 0.7, 0.9, 0.95, 1.0):
+        assert gd.g_band(sigma, 1.25, lo=0.7, hi=0.9) == 1.0, f"sigma={sigma}: band must be exactly 1.0 at/outside bounds"
+    assert abs(gd.g_band(0.8, 1.25, lo=0.7, hi=0.9) - 2.25) < 1e-12, "peak 1+delta at the band centre"
+    assert abs(gd.g_band(0.75, 1.25) - gd.g_band(0.85, 1.25)) < 1e-12, "band is symmetric about its centre"
+    assert 1.0 < gd.g_band(0.72, 1.25) < gd.g_band(0.76, 1.25) < gd.g_band(0.8, 1.25)
+    assert gd.g_band(0.8, 1.25, lo=0.9, hi=0.7) == gd.g_band(0.8, 1.25, lo=0.7, hi=0.9), "hi<lo swapped"
+    assert gd.g_band(0.7, 1.25, lo=0.7, hi=0.7) == 1.0, "zero-width band has no interior"
+    assert gd.g_window(1.0, 1.25) == 2.25, "legacy ramp untouched: full 1+delta above hi"
+    e_band = sum((gd.g_band(sig12[i], 1.25) - 1.0) * (sig12[i] - sig12[i + 1]) for i in range(len(sig12) - 1))
+    assert 0.0 < e_band < 0.5 * e_125, "band exposure is well under the ramp's (continuous: 0.1*delta vs 0.2*delta)"
+    print("     1.0 at/outside [0.7, 0.9], peak 2.25 at 0.8, symmetric; exposure band %.4f vs ramp %.4f"
+          % (e_band, e_125))
+
+    # --- (10) guider "band" mode + per-lifecycle call counters (Sampler v2 diagnostics) ---
+    print("[10] guider band mode + call counters")
+    comfy.samplers.sampling_function = fake_sampling_function
+    try:
+        g = Guider.__new__(Guider)
+        g.mode, g.cfg, g.delta, g.lo, g.hi, g.rescale = "band", 1.0, 1.25, 0.7, 0.9, 0.0
+        g.conds = {"positive": ["POS"], "negative": ["NEG"]}
+        g.inner_model = "MOCK_MODEL"
+        for sigma_val, expected_scale in ((1.0, 1.0), (0.95, 1.0), (0.8, gd.g_band(0.8, 1.25)), (0.5, 1.0)):
+            g.predict_noise(torch.zeros(1), torch.tensor([sigma_val]), model_options={}, seed=0)
+            assert abs(captured["cond_scale"] - expected_scale) < 1e-5, (sigma_val, captured["cond_scale"])
+        assert g.n_calls == 4 and g.n_guided == 1, (g.n_calls, g.n_guided)
+        g.mode = "window"
+        g.predict_noise(torch.zeros(1), torch.tensor([1.0]), model_options={}, seed=0)
+        assert g.n_calls == 5 and g.n_guided == 2, "window at sigma 1.0 is guided (ramp)"
+    finally:
+        comfy.samplers.sampling_function = real_sampling_function
+    try:
+        Guider.__init__(Guider.__new__(Guider), _FakePatcher(), mode="band")
+    except ValueError:
+        raise AssertionError("'band' must be an accepted guidance mode")
+    print("     band: 1.0 above hi (cfg1 path, no uncond NFE), guided only inside; n_calls/n_guided count")
+
+    # --- (11) Sampler v2 P1.4: guidance policy sigma decoupled from the detail-nudged model
+    #          sigma. "model" (default, v1) reads the timestep; "true" reads the trajectory sigma
+    #          the loop writes into model_options - the model itself still gets the nudged sigma ---
+    print("[11] guidance_sigma: model (v1) | true (trajectory sigma from model_options)")
+    comfy.samplers.sampling_function = fake_sampling_function
+    try:
+        g = Guider.__new__(Guider)
+        g.mode, g.cfg, g.delta, g.lo, g.hi, g.rescale = "window", 1.0, 1.25, 0.7, 0.9, 0.0
+        g.conds = {"positive": ["POS"], "negative": ["NEG"]}
+        g.inner_model = "MOCK_MODEL"
+        mo = {gd.TRUE_SIGMA_KEY: 0.95}
+        g.predict_noise(torch.zeros(1), torch.tensor([0.8]), model_options=mo, seed=0)
+        assert abs(captured["cond_scale"] - gd.g_window(0.8, 1.25)) < 1e-5, "default: the timestep decides"
+        g.guidance_sigma = "true"
+        g.predict_noise(torch.zeros(1), torch.tensor([0.8]), model_options=mo, seed=0)
+        assert abs(captured["cond_scale"] - 2.25) < 1e-6, "true: the trajectory sigma 0.95 decides"
+        assert abs(float(captured["timestep"].flatten()[0]) - 0.8) < 1e-6, "the model still sees the nudged sigma"
+        g.predict_noise(torch.zeros(1), torch.tensor([0.8]), model_options={}, seed=0)
+        assert abs(captured["cond_scale"] - gd.g_window(0.8, 1.25)) < 1e-5, "no key -> falls back to the timestep"
+    finally:
+        comfy.samplers.sampling_function = real_sampling_function
+    try:
+        Guider.__init__(Guider.__new__(Guider), _FakePatcher(), mode="window", guidance_sigma="banana")
+        raise AssertionError("invalid guidance_sigma must raise")
+    except ValueError as e:
+        assert "guidance_sigma" in str(e)
+    print("     model: timestep; true: model_options sigma (model still nudged); missing key -> timestep")
+
     print("\ntest_guidance: ALL ASSERTS PASSED")
 
 

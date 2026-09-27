@@ -581,6 +581,400 @@ def main():
         smp._run_one = real_run_one
     print("     masked run stays one lifecycle (longest phase's model); unmasked split unchanged")
 
+    # ======================================================================
+    # Sampler v2 (iteration 1): solver contract, rf_2m, eta_tail, diagnostics
+    # ======================================================================
+    def preset_sigmas(name, refine_steps=0):
+        p = presets.PRESETS[name]
+        return sch.build_schedule(p["n_steps"], alpha=p["alpha"], restart_frac=p["restart_frac"],
+                                  sigma_r=p["sigma_r"], plunge=p["plunge"], refine_steps=refine_steps)
+
+    def smooth(x, sigma, **kw):
+        # x0_hat = c + (1 - 0.3*sigma)*(x - c)  =>  dx/dsigma = 0.3*(x - c): closed-form trajectory
+        # x(s) = c + (x(s0) - c)*exp(0.3*(s - s0)); x0_hat moves along it, so Euler is NOT exact
+        s = sigma.view(-1, *([1] * (x.ndim - 1))) if torch.is_tensor(sigma) else sigma
+        return 0.1 + (1.0 - 0.3 * s) * (x - 0.1)
+
+    # --- (21) solver contract: None derives from `order` bit-exactly, names are explicit ---
+    print("[21] solver contract: solver=None == order-derived name; unknown solver rejected")
+    sig_plain = sch.build_schedule(12, restart_frac=0.0, plunge=False)
+    xs = torch.randn(1, 16, 1, 6, 6)
+    for order, name in ((1, "euler"), (2, "euler_2m")):
+        a = smp.kreaphoton_sampler_loop(smooth, xs.clone(), sig_plain, order=order, eta0=0.0, detail_amount=0.4)
+        b = smp.kreaphoton_sampler_loop(smooth, xs.clone(), sig_plain, order=1, solver=name, eta0=0.0,
+                                        detail_amount=0.4)
+        assert torch.equal(a, b), f"order={order} must equal solver={name!r} bit-exactly"
+    SOLVERS_ALL = ("euler", "euler_2m", "rf_2m")
+    assert tuple(smp.SOLVERS) == SOLVERS_ALL
+    try:
+        smp.kreaphoton_sampler_loop(smooth, xs.clone(), sig_plain, solver="heun")
+        raise AssertionError("unknown solver must raise")
+    except ValueError as e:
+        assert "solver" in str(e)
+    print("     order 1/2 == 'euler'/'euler_2m'; 'heun' -> ValueError naming solver")
+
+    # --- (22) rf_2m is second order (DPM++2M in the RF/x0 form, variable step by construction):
+    #          error vs the closed-form trajectory shrinks ~4x per grid halving, Euler ~2x.
+    #          Measured finding pinned here too: the legacy fixed-coefficient AB2 is ALSO second
+    #          order on a smoothly nonuniform grid (the coefficient mismatch is O(h^2)), and the
+    #          restart tail is uniform in sigma where 1.5/-0.5 is exact - which 2M wins on the
+    #          real model is an A/B question, not a correctness one (smooth mock favours sigma-time) ---
+    print("[22] rf_2m convergence order on a closed-form trajectory")
+    xa = torch.randn(1, 4, 1, 4, 4)
+
+    def err(solver, n):
+        # nonuniform grid (sigma = 0.9 - 0.8*u^1.5) from 0.9 to 0.1, no final readout
+        sig = torch.tensor([0.9 - 0.8 * (i / n) ** 1.5 for i in range(n + 1)])
+        out = smp.kreaphoton_sampler_loop(smooth, xa.clone(), sig, solver=solver, eta0=0.0)
+        exact = 0.1 + (xa - 0.1) * torch.exp(torch.tensor(0.3 * (float(sig[-1]) - float(sig[0]))))
+        return float((out - exact).abs().max())
+    e = {s: (err(s, 16), err(s, 32)) for s in SOLVERS_ALL}
+    ratio = {s: e[s][0] / e[s][1] for s in SOLVERS_ALL}
+    assert 1.6 < ratio["euler"] < 2.6, "Euler is first order (ratio %.2f)" % ratio["euler"]
+    assert ratio["rf_2m"] > 3.4, "rf_2m is second order (ratio %.2f)" % ratio["rf_2m"]
+    assert ratio["euler_2m"] > 3.4, "legacy AB2 is second order on a smooth grid (ratio %.2f)" % ratio["euler_2m"]
+    assert e["rf_2m"][0] < 0.5 * e["euler"][0], "rf_2m beats Euler on the same grid"
+    # a grid starting at sigma=1 (lambda=-inf) degrades to a first-order step instead of crashing
+    s1 = smp.kreaphoton_sampler_loop(smooth, xa.clone(), sig_plain, solver="rf_2m", eta0=0.0)
+    assert torch.isfinite(s1).all()
+    print("     err 16 -> 32 steps: " + "; ".join("%s %.2e -> %.2e (x%.2f)" % (s, e[s][0], e[s][1], ratio[s])
+                                               for s in SOLVERS_ALL) + "; sigma=1 start finite")
+
+    # --- (23) eta_tail: None / == eta0 are bit-exact; 0 makes the restart tail deterministic;
+    #          a jump landing at/above the plunge floor (self-refine) is not the tail ---
+    print("[23] eta_tail: bit-exact defaults, deterministic restart tail, refine segment untouched")
+    sig_q = preset_sigmas("turbo/quality")
+    xq = torch.randn(1, 16, 1, 6, 6)
+    ref_q = smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q, order=2, eta0=1.0, detail_amount=0.7,
+                                        restart_seed=4)
+    for et in (None, 1.0):
+        same_q = smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q, order=2, eta0=1.0, detail_amount=0.7,
+                                             restart_seed=4, eta_tail=et)
+        assert torch.equal(ref_q, same_q), f"eta_tail={et} must be bit-exact"
+    st = {}
+    det_q = smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q, solver="euler", eta0=1.0, detail_amount=0.7,
+                                        restart_seed=4, eta_tail=0.0, stats=st)
+    assert not torch.equal(ref_q, det_q)
+    assert (st["ancestral"], st["euler"], st["final"], st["jumps"]) == (11, 3, 2, 1), st
+    same_plain = smp.kreaphoton_sampler_loop(smooth, xs.clone(), sig_plain, eta0=1.0, restart_seed=4)
+    tail_plain = smp.kreaphoton_sampler_loop(smooth, xs.clone(), sig_plain, eta0=1.0, restart_seed=4, eta_tail=0.0)
+    assert torch.equal(same_plain, tail_plain), "no restart jump -> no tail -> eta_tail is a no-op"
+    st_r = {}
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), preset_sigmas("turbo/quality", refine_steps=4), solver="euler",
+                                eta0=1.0, restart_seed=4, eta_tail=0.0, stats=st_r)
+    assert (st_r["ancestral"], st_r["euler"], st_r["jumps"]) == (14, 3, 2), st_r   # 11 structure + 3 refine
+    print("     quality: 14 ancestral -> 11 ancestral + 3 deterministic tail; refine jump (0.85) keeps eta0")
+
+    # --- (24) diagnostics = the testable branch contract of every shipped preset. The v1 presets
+    #          never reach the multistep branch (euler_2m == euler); quality-v2 runs a real 2M tail ---
+    print("[24] branch counts per preset (stats)")
+    assert "turbo/quality-v2" in presets.PRESETS, "the v2 branch below must not pass vacuously"
+    for name, p in presets.PRESETS.items():
+        sig_p = preset_sigmas(name)
+        st = {}
+        smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_p, order=2 if p["sampler"] != "euler" else 1,
+                                    solver=p["sampler"], eta0=p["eta0"], sigma_gate=p["sigma_gate"],
+                                    detail_amount=p["detail_a"], eta_tail=p.get("eta_tail"), restart_seed=4,
+                                    pc=p.get("pc", "off"), stats=st)
+        branches = st["ancestral"] + st["euler"] + st["ab2"] + st["rf2m"] + st["heun"] + st["final"]
+        assert st["model_calls"] == branches == sch.count_model_calls(sig_p), (name, st)
+        if name == "turbo/quality-v2":
+            assert (st["ancestral"], st["euler"], st["rf2m"], st["ab2"]) == (11, 1, 2, 0), st
+        elif name == "turbo/quality-plus":   # PC: step 8 ancestral+corrector, tail heun / rf2m / heun
+            assert (st["ancestral"], st["euler"], st["rf2m"], st["heun"], st["pc"]) == (11, 0, 1, 2, 3), st
+        else:
+            assert st["ab2"] == 0 and st["rf2m"] == 0, f"{name}: v1 preset reached the multistep branch {st}"
+        print("     %-18s %s" % (name, smp.format_stats(st)))
+    # the old AB2 path on a shipped-preset config vs plain Euler: identical (the dead-label finding)
+    o_eu = smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q, order=1, eta0=1.0, detail_amount=0.7, restart_seed=4)
+    assert torch.equal(ref_q, o_eu), "turbo/quality: euler_2m == euler bit-exactly (AB2 never fires)"
+
+    # --- (25) multistep history contract: every trajectory-changing event declares history
+    #          invalid; resets are counted only when a real history was dropped ---
+    print("[25] history-reset contract")
+    st = {}
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_bal, solver="rf_2m", eta0=0.0, restart_seed=4,
+                                variety_a_latent=0.4, variety_state="pending", variety_seed=3, stats=st)
+    assert st["resets"].get("variety") == 1, st
+    st = {}
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_bal, solver="rf_2m", eta0=0.0, restart_seed=4,
+                                coherence_jump=0.19, stats=st)
+    assert st["resets"].get("coherence") == 1, st
+    # raw: the gate is monotone in sigma_next, so its deterministic steps sit alone right before
+    # a readout - each runs first order, the AB2 branch is never reached (no history to reset)
+    st = {}
+    sig_raw = preset_sigmas("raw/experimental")
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_raw, solver="euler_2m", eta0=1.0, restart_seed=4, stats=st)
+    assert st["euler"] >= 1 and st["ab2"] == 0, st
+    st = {}
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q, solver="rf_2m", eta0=1.0, eta_tail=0.0, restart_seed=4,
+                                stats=st)
+    assert st["resets"] == {"final": 1}, "structure is all-ancestral (no history to lose); the tail ends in a readout"
+    st = {}
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q, solver="euler", eta0=1.0, eta_tail=0.0, restart_seed=4,
+                                stats=st)
+    assert st["resets"] == {}, "euler keeps no multistep history - there is nothing to reset"
+    # the first tail step after the restart is first order (history reset by the jump)
+    sig_tail = torch.tensor([0.65, 0.4875, 0.325, 0.1625])
+    st = {}
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_tail, solver="rf_2m", eta0=0.0, stats=st)
+    assert (st["euler"], st["rf2m"]) == (1, 2), st
+    # a conditioning-only variety switch (a_latent 0) changes the vector field too: rf_2m drops its
+    # history there; euler_2m keeps its v1 behaviour (bit-exact default path)
+    st = {}
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_bal, solver="rf_2m", eta0=0.0, restart_seed=4,
+                                variety_a_latent=0.0, variety_state="pending", stats=st)
+    assert st["resets"].get("variety") == 1, st
+    st = {}
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_bal, solver="euler_2m", eta0=0.0, restart_seed=4,
+                                variety_a_latent=0.0, variety_state="pending", stats=st)
+    assert "variety" not in st["resets"], st
+
+    # --- (27) rf_2m step-ratio guard: after a near-flat step h_prev -> 0 and k = h/(2 h_prev) is
+    #          unbounded while the detail nudge keeps x0 - x0_prev finite (review M1: |rf - euler|
+    #          ~141 on a foreign grid). r = h_prev/h < 0.5 (k > 1) falls back to first order ---
+    print("[27] rf_2m step-ratio guard")
+    sig_flat = torch.tensor([0.9, 0.8, 0.79999, 0.6, 0.45, 0.3, 0.15, 0.0])
+    st = {}
+    x_flat = smp.kreaphoton_sampler_loop(model2, xq.clone(), sig_flat, solver="rf_2m", eta0=0.0, detail_amount=0.7,
+                                         stats=st)
+    x_eu = smp.kreaphoton_sampler_loop(model2, xq.clone(), sig_flat, solver="euler", eta0=0.0, detail_amount=0.7)
+    assert (st["euler"], st["rf2m"]) == (2, 4), "the step after the near-flat one must run first order %s" % st
+    assert float((x_flat - x_eu).abs().max()) < 1.0, "bounded next to Euler"
+    st = {}
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q, solver="rf_2m", eta0=1.0, eta_tail=0.0, stats=st)
+    assert st["rf2m"] == 2, "the calibrated tail (r 0.98 / 0.75) is untouched by the guard"
+    print("     near-flat step -> next step first order, |rf_2m - euler| bounded; quality tail keeps 2 rf2m steps")
+
+    # --- (28) the tail is a property of the FULL schedule: a phase cut after the last jump must
+    #          not hand the rest of the tail back to eta0 (review M3), and a last jump landing at/
+    #          above the plunge floor (self-refine only, no restart) is not a tail ---
+    print("[28] eta_tail across a phase cut; refine-only schedule has no tail")
+    sig_foreign = torch.tensor([1.0, 0.9, 0.8, 0.7, 0.72, 0.6, 0.3, 0.0])
+    st_one = {}
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_foreign, eta0=1.0, eta_tail=0.0, restart_seed=4, stats=st_one)
+    st_a, st_b = {}, {}
+    mid = smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_foreign[:6], eta0=1.0, eta_tail=0.0, restart_seed=4,
+                                      tail_start=smp.tail_start_index(sig_foreign), stats=st_a)
+    smp.kreaphoton_sampler_loop(smooth, mid, sig_foreign[5:], eta0=1.0, eta_tail=0.0, restart_seed=4,
+                                progress_offset=5, tail_start=smp.tail_start_index(sig_foreign), stats=st_b)
+    assert st_a["ancestral"] + st_b["ancestral"] == st_one["ancestral"], (st_one, st_a, st_b)
+    assert st_a["euler"] + st_b["euler"] == st_one["euler"] == 2, (st_one, st_a, st_b)
+    sig_refine_only = sch.build_schedule(12, restart_frac=0.0, plunge=True, refine_steps=4)
+    assert smp.tail_start_index(sig_refine_only) is None
+    a = smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_refine_only, eta0=1.0, restart_seed=4)
+    b = smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_refine_only, eta0=1.0, restart_seed=4, eta_tail=0.0)
+    assert torch.equal(a, b), "a refine jump (lands >= 0.75) is not a restart tail"
+    runs = []
+    smp._run_one = spy_run_one3 = (lambda model, positive, negative, latent_dict, sigmas, **kw:
+                                   runs.append(kw.get("tail_start")) or latent_dict)
+    try:
+        smp.run_sampling("m", "pos", None, {"samples": torch.zeros(1, 16, 1, 8, 8)}, sig_foreign, seed=1,
+                         texture_model="tex", eta_tail=0.0)
+    finally:
+        smp._run_one = real_run_one
+    assert runs == [smp.tail_start_index(sig_foreign)] * 2, runs
+    print("     split == single run; refine-only -> no tail; run_sampling hands every segment the global tail start")
+
+    # ======================================================================
+    # Sampler v2 iteration 2: guidance sigma, sigma-space detail, x0 extrapolation,
+    # predictor-corrector, adaptive self-refine, trajectory trace
+    # ======================================================================
+    tr = importlib.import_module("kreaphoton.trajectory")
+
+    def make_true_sigma_recorder():
+        seen = []
+
+        def model(x, sigma, **kw):
+            seen.append((float(sigma.flatten()[0]), kw["model_options"].get(gd.TRUE_SIGMA_KEY)))
+            return smooth(x, sigma)
+        return model, seen
+
+    # --- (29) the loop publishes the TRUE trajectory sigma for the guider on every model call ---
+    print("[29] TRUE_SIGMA_KEY = s_cur on every call (model still gets the nudged sigma)")
+    m_t, seen_t = make_true_sigma_recorder()
+    smp.kreaphoton_sampler_loop(m_t, xq.clone(), sig_q, eta0=1.0, detail_amount=0.7, restart_seed=4,
+                                extra_args={"model_options": {}})
+    calls_q = [(float(sig_q[i]), float(sig_q[i + 1])) for i in range(len(sig_q) - 1)
+               if float(sig_q[i + 1]) <= float(sig_q[i]) + 1e-6 and float(sig_q[i]) > 1e-6]
+    assert [t for _, t in seen_t] == [s for s, _ in calls_q], "true sigma = s_cur of each model-call step"
+    assert any(abs(m - t) > 1e-4 for m, t in seen_t), "with detail 0.7 the model sigma is nudged below it"
+    print("     %d calls, true sigma == s_cur, model sigma nudged" % len(seen_t))
+
+    # --- (30) sigma-space detail envelope: a function of the state's sigma only (split-invariant by
+    #          construction), phase-aware default 0.90 / 0.50 / 0.12 ---
+    print("[30] detail_space='sigma'")
+    env = smp._detail_envelope_sigma
+    hi, pk, lo = presets.DETAIL_SIGMA
+    # live finding 2026-09-27: a nudge peaking in the restart tail (the proposal's 0.90/0.50/0.12)
+    # destroys the frame at detail 0.7 (confetti mesh, the S9 mechanism) - the default peaks at the
+    # end of the structure phase and is only mild at the restart-tail entry (like v1), zero below 0.55
+    assert (hi, pk, lo) == (0.97, 0.80, 0.55)
+    assert env(0.4875, hi, pk, lo) == 0.0 and env(0.325, hi, pk, lo) == 0.0, "no nudge deep in the restart tail"
+    assert env(0.65, hi, pk, lo) < 0.4, "mild at the tail entry (a <= 0.28 at detail 0.7, v1 had 0.27)"
+    assert env(0.99, hi, pk, lo) == 0.0 and env(hi, hi, pk, lo) == 0.0 and env(lo, hi, pk, lo) == 0.0
+    assert abs(env(pk, hi, pk, lo) - 1.0) < 1e-12
+    assert 0.0 < env(0.95, hi, pk, lo) < env(0.88, hi, pk, lo) < 1.0 and 0.0 < env(0.6, hi, pk, lo) < env(0.7, hi, pk, lo)
+    assert env(0.8, 0.90, 0.50, 0.12) > 0.0 and env(0.95, 0.90, 0.50, 0.12) == 0.0, "any (hi, peak, lo) is honoured"
+    m_s, seen_s = make_true_sigma_recorder()
+    smp.kreaphoton_sampler_loop(m_s, xq.clone(), sig_q, eta0=0.0, detail_amount=0.7, detail_space="sigma",
+                                extra_args={"model_options": {}})
+    for (sm, st_), (s, sn) in zip(seen_s, calls_q):
+        plunge_or_final = sn <= 1e-6 or (s - sn) > smp.PLUNGE_DSIGMA
+        a = 0.0 if plunge_or_final else 0.7 * env(s, hi, pk, lo)
+        assert abs(sm - max(1e-4, s - a * (s - sn))) < 1e-6, (s, sm)
+    split = 13
+    m_a2, seen_a2 = make_true_sigma_recorder()
+    mid = smp.kreaphoton_sampler_loop(m_a2, xq.clone(), sig_q[:split + 1], eta0=0.0, detail_amount=0.7,
+                                      detail_space="sigma", extra_args={"model_options": {}})
+    smp.kreaphoton_sampler_loop(m_a2, mid, sig_q[split:], eta0=0.0, detail_amount=0.7, detail_space="sigma",
+                                extra_args={"model_options": {}})
+    assert [m for m, _ in seen_a2] == [m for m, _ in seen_s], "no progress_offset needed: split == single run"
+    try:
+        smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q, detail_space="banana")
+        raise AssertionError("unknown detail_space must raise")
+    except ValueError as e:
+        assert "detail_space" in str(e)
+    print("     0 above 0.90 / below 0.12, 1 at 0.50; sigma_model follows it; split-invariant without offsets")
+
+    # --- (31) terminal x0 extrapolation: order 2 (quadratic, exact for a quadratic x0(sigma)) and
+    #          the local trust region; order 1 / trust 0 are the v1 path bit-for-bit ---
+    print("[31] x0 extrapolation order 2 + trust region in the loop")
+    A2, B2, C2 = torch.randn_like(xq), torch.randn_like(xq), torch.randn_like(xq)
+
+    def quad_model(x, sigma, **kw):
+        s = float(sigma.flatten()[0])
+        return A2 + B2 * s + C2 * s * s
+    base_ex = smp.kreaphoton_sampler_loop(quad_model, xq.clone(), sig_q, eta0=0.0, x0_extrapolation=1.0)
+    same_ex = smp.kreaphoton_sampler_loop(quad_model, xq.clone(), sig_q, eta0=0.0, x0_extrapolation=1.0,
+                                          x0_extrap_order=1, x0_trust=0.0)
+    assert torch.equal(base_ex, same_ex)
+    q2 = smp.kreaphoton_sampler_loop(quad_model, xq.clone(), sig_q, eta0=0.0, x0_extrapolation=1.0, x0_extrap_order=2)
+    assert torch.allclose(q2, A2, atol=1e-4), "quadratic x0(sigma) extrapolated to sigma 0 exactly"
+    assert not torch.allclose(base_ex, A2, atol=1e-3), "linear is not exact on it"
+    huge = smp.kreaphoton_sampler_loop(quad_model, xq.clone(), sig_q, eta0=0.0, x0_extrapolation=1.0,
+                                       x0_extrap_order=2, x0_trust=1e9)
+    assert torch.equal(huge, q2), "an inactive trust region changes nothing"
+    tight = smp.kreaphoton_sampler_loop(quad_model, xq.clone(), sig_q, eta0=0.0, x0_extrapolation=1.0,
+                                        x0_extrap_order=2, x0_trust=0.5)
+    last = quad_model(None, torch.tensor([float(sig_q[-2])]))
+    prev = quad_model(None, torch.tensor([float(sig_q[-3])]))
+    assert bool(((tight - last).abs() <= 0.5 * tr.local_rms(last - prev) + 1e-6).all()), "|delta| <= k * local rms"
+    print("     order 2 exact, order 1 not; trust 1e9 == off; trust 0.5 bounds every pixel")
+
+    # --- (32) selective predictor-corrector (Heun on the deterministic part, +1 call at 3 steps) ---
+    print("[32] predictor-corrector: strategic steps, Heun accuracy, ancestral down-step, auto")
+    assert smp.pc_step_indices(sig_q, composition_end=0.85) == [8, 13, 15], smp.pc_step_indices(sig_q)
+    head = torch.tensor([1.0, 0.985, 0.968, 0.951, 0.932, 0.912, 0.89, 0.867, 0.0])
+    assert smp.pc_step_indices(head) == [], "a Composition Drafts head has no strategic step"
+    fwd = []
+
+    def counting(x, sigma, **kw):
+        fwd.append(float(sigma.flatten()[0]))
+        return smooth(x, sigma)
+    st = {}
+    out_pc = smp.kreaphoton_sampler_loop(counting, xq.clone(), sig_q, solver="rf_2m", eta0=1.0, eta_tail=0.0,
+                                         pc="selective", restart_seed=4, stats=st)
+    assert (st["model_calls"], st["pc"], len(fwd)) == (16, 3, 19), (st, len(fwd))
+    assert st["ancestral"] + st["euler"] + st["ab2"] + st["rf2m"] + st["heun"] + st["final"] == 16, st
+    assert st["heun"] == 2 and torch.isfinite(out_pc).all(), st   # restart step + late step; step 8 is ancestral
+    one = torch.tensor([0.9, 0.5])
+    exact1 = 0.1 + (xa - 0.1) * torch.exp(torch.tensor(0.3 * (0.5 - 0.9)))
+    e_eu = float((smp.kreaphoton_sampler_loop(smooth, xa.clone(), one, eta0=0.0) - exact1).abs().max())
+    e_pc = float((smp.kreaphoton_sampler_loop(smooth, xa.clone(), one, eta0=0.0, pc="selective", pc_steps=[0])
+                  - exact1).abs().max())
+    assert e_pc < 0.1 * e_eu, "Heun step: local error %.2e vs Euler %.2e" % (e_pc, e_eu)
+    for thr, n_pc in ((0.0, 3), (1e9, 0)):
+        st = {}
+        smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q, eta0=1.0, eta_tail=0.0, pc="auto", pc_threshold=thr,
+                                    restart_seed=4, stats=st)
+        assert st["pc"] == n_pc and len(st["pc_motion"]) == 3, (thr, st)
+    # a texture-model split starts a new lifecycle at the readout: the restart step's motion is
+    # measured against the draft the segment was handed (the state at sigma 0 IS an x0)
+    st = {}
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q[12:], eta0=1.0, eta_tail=0.0, pc="auto", pc_steps=[13, 15],
+                                progress_offset=12, tail_start=13, restart_seed=4, stats=st)
+    assert len(st["pc_motion"]) == 2 and st["pc_motion"][0] is not None, st["pc_motion"]
+    try:
+        smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q, pc="always")
+        raise AssertionError("unknown pc mode must raise")
+    except ValueError as e:
+        assert "pc" in str(e)
+    print("     indices [8, 13, 15]; +3 calls; Heun err %.1e vs Euler %.1e; auto thr 0 -> 3, 1e9 -> 0" % (e_pc, e_eu))
+
+    # --- (33) adaptive self-refine: a stable draft skips the whole refine segment without an RNG
+    #          draw - with the sigma-space envelope that IS the no-refine schedule, bit-for-bit ---
+    print("[33] refine_mode='auto'")
+    sig_r = preset_sigmas("turbo/quality", refine_steps=4)
+    kw_r = dict(eta0=1.0, detail_amount=0.7, detail_space="sigma", restart_seed=4)
+    no_refine = smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q, **kw_r)
+    st = {}
+    skipped = smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_r, refine_mode="auto", refine_threshold=1e9,
+                                          stats=st, **kw_r)
+    assert torch.equal(skipped, no_refine), "skipped refine == the schedule without it"
+    assert st["model_calls"] == 16 and st["refine_skipped"] == 1 and st["refine_motion"] is not None, st
+    st = {}
+    ran = smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_r, refine_mode="auto", refine_threshold=0.0,
+                                      stats=st, **kw_r)
+    on = smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_r, **kw_r)
+    assert torch.equal(ran, on) and st["model_calls"] == 20 and st["refine_skipped"] == 0, st
+    print("     stable draft: 16 calls, == no-refine schedule; unstable: 20 calls, == refine on (motion %.3f)"
+          % st["refine_motion"])
+
+    # --- (34) trajectory trace: one motion record per model call ---
+    print("[34] trace")
+    st = {}
+    smp.kreaphoton_sampler_loop(smooth, xq.clone(), sig_q, eta0=1.0, restart_seed=4, trace=True, stats=st)
+    assert len(st["traj"]) == st["model_calls"] == 16
+    assert st["traj"][0]["sigma"] == 1.0 and "mf" in st["traj"][1] and st["traj"][0].get("mf") is None
+    print("     16 records (first call has no previous x0)")
+
+    # --- (35) run_sampling threads the iteration-2 options (and the GLOBAL pc steps) ---
+    print("[35] run_sampling threads guidance_sigma / detail_space / x0 order+trust / pc / refine_mode / trace")
+    runs = []
+
+    def spy_run_one4(model, positive, negative, latent_dict, sigmas, **kw):
+        runs.append({k: kw.get(k) for k in ("guidance_sigma", "detail_space", "detail_sigma", "x0_extrap_order",
+                                            "x0_trust", "pc", "pc_steps", "refine_mode", "trace")})
+        return latent_dict
+    smp._run_one = spy_run_one4
+    try:
+        lat = {"samples": torch.zeros(1, 16, 1, 8, 8)}
+        smp.run_sampling("m", "pos", None, lat, sig_q, seed=1, guidance_sigma="true", detail_space="sigma",
+                         x0_extrap_order=2, x0_trust=1.0, pc="selective", refine_mode="auto", trace=True,
+                         texture_model="tex")
+        smp.run_sampling("m", "pos", None, lat, sig_q, seed=1)
+    finally:
+        smp._run_one = real_run_one
+    assert len(runs) == 3
+    for r in runs[:2]:
+        assert r == {"guidance_sigma": "true", "detail_space": "sigma", "detail_sigma": presets.DETAIL_SIGMA,
+                     "x0_extrap_order": 2, "x0_trust": 1.0, "pc": "selective", "pc_steps": [8, 13, 15],
+                     "refine_mode": "auto", "trace": True}, r
+    assert runs[2]["pc"] == "off" and runs[2]["pc_steps"] is None and runs[2]["guidance_sigma"] == "model"
+    print("     every segment gets the options and the full-schedule pc steps; defaults are v1")
+    print("     variety / coherence / final resets counted, euler keeps none (an ancestral step right after a "
+          "deterministic one is unreachable: the gate is monotone in sigma_next); first step after a reset is "
+          "first order")
+
+    # --- (26) run_sampling threads solver / eta_tail to every segment's loop ---
+    print("[26] run_sampling threads solver + eta_tail")
+    runs = []
+
+    def spy_run_one2(model, positive, negative, latent_dict, sigmas, **kw):
+        runs.append((kw.get("solver"), kw.get("eta_tail")))
+        return latent_dict
+    smp._run_one = spy_run_one2
+    try:
+        lat = {"samples": torch.zeros(1, 16, 1, 8, 8)}
+        smp.run_sampling("m", "pos", None, lat, sig_q, seed=1, solver="rf_2m", eta_tail=0.0)
+        smp.run_sampling("m", "pos", None, lat, sig_q, seed=1, texture_model="tex", solver="rf_2m", eta_tail=0.0)
+        smp.run_sampling("m", "pos", None, lat, sig_q, seed=1)
+    finally:
+        smp._run_one = real_run_one
+    assert runs == [("rf_2m", 0.0)] * 3 + [(None, None)], runs
+    print("     single lifecycle and every split segment receive solver / eta_tail; defaults None")
+
     print("\ntest_sampling: ALL ASSERTS PASSED")
 
 

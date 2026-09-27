@@ -47,12 +47,46 @@ GUIDANCE = {
 }
 
 
+# --- Sampler v2 iteration 2 (2026-09-27, all opt-in) ---
+# Sigma-space detail envelope (hi, peak, lo). MEASURED 2026-09-27 (int8 merge, portrait seed
+# 1001, detail 0.7): the proposal's phase-aware 0.90 / 0.50 / 0.12 - peak pressure in the
+# restart tail - DESTROYS the frame (a coloured confetti mesh over all skin: the tail steps
+# get a nudge of 0.45 / 0.70 / 0.39 x step, the model under-removes the restart noise - the
+# S9 mechanism); the same shape at detail 0.25 is clean, and so is 0.97 / 0.80 / 0.55 at
+# 0.7. Owner decision: default 0.97 / 0.80 / 0.55 - the v1 step envelope's shape on the
+# calibrated grids (peak at the end of the structure phase, mild at the tail entry, zero
+# below 0.55), now invariant to the step count / restart fraction / self-refine / splits.
+DETAIL_SIGMA = (0.97, 0.80, 0.55)
+# Adaptive compute thresholds on trajectory.motion (relative change of the x0 estimate).
+# CALIBRATED 2026-09-27 on 15 runs (6 categories x 3 seeds: portrait, night, hands, group,
+# full body, signage; quality-plus spelled out with both decisions on 'auto'):
+ADAPTIVE = {
+    "refine_mf_motion": 0.35,   # self-refine 'auto' skips the refine pass when the draft's mid-
+                                # frequency change over the identity phase (x0 at sigma <= 0.85 ->
+                                # plunge readout) is below this. Measured 0.39-0.66 and NOT
+                                # separating the categories that benefit (hands 0.52-0.56 vs
+                                # portrait 0.39-0.57 vs night 0.59-0.61) -> set below every
+                                # observed value: auto keeps the V21-proven refine on ordinary
+                                # content and only skips an unusually settled draft. Not a
+                                # predictor of 'needs refine' - that metric does not exist yet.
+    "pc_motion": 0.22,          # predictor-corrector 'auto' corrects a strategic step when the x0
+                                # estimate moved more than this since the previous call. Measured:
+                                # boundary step portrait 0.14 vs hands/groups/signage/full body
+                                # 0.19-0.31, restart step 0.18-0.21 vs 0.24-0.31, late step
+                                # 0.08-0.12 everywhere -> complex scenes get the boundary + restart
+                                # corrections, a portrait and the late step do not. Whether the
+                                # correction improves the picture is an A/B question.
+}
+
+
 def effective_delta(delta: float, guidance_mode: str, variety_a_latent: float,
                     budget: float = None) -> float:
     """Delta actually used by the window when the latent variety axis is active
-    (see GUIDANCE['variety_budget']). Identity for guidance_mode != 'window' or
-    a_latent == 0 - the V1-validated window is untouched without variety."""
-    if guidance_mode != "window" or variety_a_latent <= 0.0:
+    (see GUIDANCE['variety_budget']). Identity for guidance_mode 'off'/'flat' or
+    a_latent == 0 - the V1-validated window is untouched without variety. The v2
+    'band' mode spends the same budget (UNMEASURED assumption: the same guided
+    cond/uncond disagreement amplifies the re-composed noise inside the band)."""
+    if guidance_mode not in ("window", "band") or variety_a_latent <= 0.0:
         return float(delta)
     b = GUIDANCE["variety_budget"] if budget is None else budget
     return float(delta) * max(0.0, 1.0 - b * float(min(1.0, variety_a_latent)))
@@ -204,6 +238,42 @@ PRESETS = {
         "contraction": 0.85,       # softer initial-noise amplitude than 0.70 (V5) - less
                                     # micro-contrast; V16-era smoke, not a V-slot calibration
         "sampler": "euler_2m",
+    },
+    "turbo/quality-v2": {          # Sampler v2 iteration 1 (2026-09-27), EXPERIMENTAL A/B candidate:
+        "guidance": "window",      # turbo/quality with ONLY the numerical engine changed - the
+        "x0_extrapolation": 0.0,   # structure phase keeps the gated ancestral eta, the restart
+        "n_steps": 16,             # tail runs deterministic (eta_tail 0) and second order (rf_2m:
+        "alpha": 3.158,            # 1 Euler + 2 DPM++2M steps on this grid). turbo/quality's own
+        "restart_frac": 0.25,      # euler_2m is bit-identical to euler in txt2img (never two
+        "sigma_r": 0.65,           # deterministic steps in a row). Guidance stays the V1 ramp so one A/B round
+        "plunge": True,            # measures one axis; the "band" mode is tested separately via
+        "detail_a": 0.70,          # the Advanced node. UNVALIDATED - promote to turbo/quality only
+        "eta0": 1.0,               # after the owner's visual A/B.
+        "sigma_gate": 0.10,
+        "contraction": 0.70,
+        "sampler": "rf_2m",        # txt2img only is the one-axis A/B: at denoise < 1 the refine
+                                   # path is deterministic (eta0 0) and rf_2m replaces quality's
+                                   # AB2 over the whole partial descent
+        "eta_tail": 0.0,           # optional preset key (absent = eta0 in the tail, v1 behaviour)
+        "experimental": True,
+    },
+    "turbo/quality-plus": {        # Sampler v2 iteration 2 (2026-09-27), EXPERIMENTAL (proposal §24.5,
+        "guidance": "window",      # owner choice): turbo/quality-v2 + a selective predictor-corrector
+        "x0_extrapolation": 0.0,   # (Heun at 3 strategic steps: the composition -> identity boundary,
+        "n_steps": 16,             # the first restart-tail step, the last detail step; +3 model
+        "alpha": 3.158,            # calls) + self-refine 'auto' (the refine pass of the coherence
+        "restart_frac": 0.25,      # tools, measured to fix hands in V21 at +25% time, run only when
+        "sigma_r": 0.65,           # the draft is still moving - presets.ADAPTIVE; +0 or +4 calls).
+        "plunge": True,            # 19-23 model calls. Extrapolation, the sigma-space envelope and
+        "detail_a": 0.70,          # the soft plunge stay separate A/B axes (Advanced / Scheduler).
+        "eta0": 1.0,               # UNVALIDATED - txt2img only (img2img: no PC, no refine).
+        "sigma_gate": 0.10,
+        "contraction": 0.70,
+        "sampler": "rf_2m",
+        "eta_tail": 0.0,
+        "pc": "selective",         # optional preset key: off | selective | auto
+        "refine": "auto",          # optional preset key: off | auto (coherence self_refine forces on)
+        "experimental": True,
     },
     "raw/experimental": {
         "guidance": "flat",        # RAW is NOT distilled: real full-trajectory CFG (KPA-01 fix;
@@ -449,6 +519,13 @@ def validate_presets(presets: dict = None):
             raise ValueError(f"preset {name!r} has guidance='flat' but no 'cfg'")
         if p["guidance"] not in ("flat", "window"):
             raise ValueError(f"preset {name!r}: unknown guidance policy {p['guidance']!r}")
+        # optional Sampler v2 keys (absent = the v1 behaviour)
+        if "eta_tail" in p and not float(p["eta_tail"]) >= 0.0:
+            raise ValueError(f"preset {name!r}: eta_tail must be >= 0, got {p['eta_tail']!r}")
+        if p.get("pc", "off") not in ("off", "selective", "auto"):
+            raise ValueError(f"preset {name!r}: pc must be off / selective / auto, got {p['pc']!r}")
+        if p.get("refine", "off") not in ("off", "auto"):
+            raise ValueError(f"preset {name!r}: refine must be off / auto, got {p['refine']!r}")
     return True
 
 

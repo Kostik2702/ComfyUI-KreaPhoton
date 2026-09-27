@@ -220,6 +220,42 @@ def main():
     assert sch.count_model_calls(one) == 13
     print("     2 jumps, 16 model calls, refine 0.85 -> 0.75 -> plunge, restart unchanged, refine_steps=0 bit-identical")
 
+    # --- (J) Sampler v2 P2.2/P2.3: plunge floor as a parameter + soft plunge. Defaults are the
+    #         v1 schedule bit-for-bit; a soft plunge carves its bridge points out of the structure
+    #         points, so model calls stay == steps (NFE contract F) ---
+    print("[J] plunge_sigma + soft_plunge")
+    for n in (8, 12, 16):
+        ref = sch.build_schedule(n, restart_frac=0.25, sigma_r=0.65, plunge=True, refine_steps=4)
+        same = sch.build_schedule(n, restart_frac=0.25, sigma_r=0.65, plunge=True, refine_steps=4,
+                                  plunge_sigma=sch.PLUNGE_SIGMA_FLOOR, soft_plunge=0)
+        assert torch.equal(ref, same), "defaults must be the v1 schedule bit-for-bit"
+    s68 = sch.build_schedule(12, restart_frac=0.25, sigma_r=0.65, plunge=True, plunge_sigma=0.68).tolist()
+    j68 = [i for i in range(len(s68) - 1) if s68[i + 1] > s68[i] + 1e-6][0]
+    assert abs(s68[j68 - 1] - 0.68) < 1e-6 and s68[j68] == 0.0 and sch.count_model_calls(s68) == 12
+    r82 = sch.build_schedule(12, restart_frac=0.25, sigma_r=0.65, plunge=True, plunge_sigma=0.82,
+                             refine_steps=4, refine_sigma=0.80).tolist()
+    jr = [i for i in range(len(r82) - 1) if r82[i + 1] > r82[i] + 1e-6]
+    assert r82[jr[0] + 1] > 0.82 and abs(r82[jr[1] - 1] - 0.82) < 1e-6, "refine re-noises above and re-plunges at the floor"
+    # live finding 2026-09-27: bridge steps of <= 0.25 are ordinary steps for the M2 nudge and at
+    # detail 0.7 they wreck the draft (colored pebbles); the one-step bridge (0.75 -> 0.375) is
+    # plunge-sized, nudge-free and clean -> soft_plunge is capped at SOFT_PLUNGE_MAX = 1
+    assert sch.SOFT_PLUNGE_MAX == 1
+    for n in (8, 12, 16):
+        for k in (1, 2, 3):
+            sp = sch.build_schedule(n, restart_frac=0.25, sigma_r=0.65, plunge=True, soft_plunge=k).tolist()
+            assert sch.count_model_calls(sp) == n, (n, k)
+            j = [i for i in range(len(sp) - 1) if sp[i + 1] > sp[i] + 1e-6][0]
+            assert abs(sp[j - 1] - 0.375) < 1e-6 and abs(sp[j - 2] - 0.75) < 1e-6 and sp[j] == 0.0, sp
+            assert sp[j - 2] - sp[j - 1] > 0.25, "the bridge step is plunge-sized (no detail nudge)"
+            sch.validate_sigmas(torch.tensor(sp))
+    sp2 = sch.build_schedule(12, restart_frac=0.25, sigma_r=0.65, plunge=True, soft_plunge=1).tolist()
+    assert [round(v, 4) for v in sp2[7:10]] == [0.75, 0.375, 0.0], sp2   # 9 structure pts -> 8 + 1 bridge
+    tiny = sch.build_schedule(3, restart_frac=0.0, plunge=True, soft_plunge=1)
+    assert sch.count_model_calls(tiny) == 3 and len(tiny) == 4, "soft_plunge clamped so >= 2 structure points remain"
+    assert torch.equal(sch.build_schedule(2, plunge=True, soft_plunge=1), sch.build_schedule(2, plunge=True))
+    assert torch.equal(sch.build_schedule(12, soft_plunge=1), sch.build_schedule(12)), "no plunge -> no bridge"
+    print("     defaults bit-identical; floor 0.68/0.82 honoured (refine too); bridge 0.75 -> 0.375 -> 0 (cap 1), calls == steps")
+
     print("\ntest_schedules: ALL ASSERTS PASSED")
 
 

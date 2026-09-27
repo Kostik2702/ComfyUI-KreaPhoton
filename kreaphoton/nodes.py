@@ -6,7 +6,7 @@ import contextlib
 import torch
 
 from .presets import (ANCHOR, COHERENCE, COHERENCE_OPTIONS, DEFAULT_PRESET, DEFAULT_RESOLUTION_ASPECT,
-                      DEFAULT_RESOLUTION_SIZE, DEFAULT_UPSCALE_PRESET,
+                      DEFAULT_RESOLUTION_SIZE, DEFAULT_UPSCALE_PRESET, DETAIL_SIGMA,
                       DLSS_PRESETS, FIDELITY, GUIDANCE, LORA_PHASES, MANIFOLD_MEAN, MANIFOLD_STD, PAG,
                       PRESETS, RESOLUTION_ASPECTS, RESOLUTION_BUCKETS, RESTART_ENHANCE_OPTIONS,
                       TILE, UPSCALE_PRESETS, UPSCALE_TEXTURE_START,
@@ -16,14 +16,16 @@ from .lora_phase import add_to_plan, build_phase_models
 from .noise import slerp_noise
 from .sampling import run_sampling
 from .save import KreaPhotonSaveImage
-from .schedules import ALPHA, SHIFT, alpha_for_latent, build_schedule, refine_schedule
+from .schedules import (ALPHA, PLUNGE_SIGMA_FLOOR, SHIFT, SOFT_PLUNGE_MAX, alpha_for_latent, build_schedule,
+                        refine_schedule)
 from .tiling import LatentTiler, LFAnchor
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 
 CATEGORY = "KreaPhoton"
-_ORDER_FROM_SAMPLER_NAME = {"euler": 1, "euler_2m": 2}
+_ORDER_FROM_SAMPLER_NAME = {"euler": 1, "euler_2m": 2, "rf_2m": 2}   # name -> order; the name itself
+                                                                       # is passed on as `solver`
 
 _VAE_PREVIEW_TOOLTIP = ("Optional: connect a VAE to show the decoded result as a "
                         "thumbnail on this node (KSampler-Efficient style). Adds one "
@@ -75,6 +77,31 @@ _COHERENCE_TOOLTIP = ("Power-Nodes-derived coherence tools (v1.4). jump = one-ti
                       "sigma 0.85 and re-descend 4 steps, plunge again, then the usual restart: the "
                       "model re-decides faces/bodies/clothing with the whole draft as a prior (+4 model "
                       "calls). Use self_refine when LoRA stacks or crowded scenes come out incoherent.")
+_ETA_TAIL_TOOLTIP = ("EXPERIMENTAL (Sampler v2): eta0 for the restart tail only - the steps after the last "
+                     "re-noise jump that lands below sigma 0.75 (a self-refine jump keeps eta0). 0 = "
+                     "deterministic restart tail: with eta0 > 0 the only place the 2m solvers can run (they "
+                     "need two deterministic steps in a row; a gated eta0 > 0 leaves them none elsewhere). "
+                     "-1 = off (eta0 everywhere). No effect on a schedule without a restart jump.")
+_GUIDANCE_SIGMA_TOOLTIP = ("EXPERIMENTAL (Sampler v2): which sigma the guidance policy (window/band scale, PAG "
+                           "gate) reads. model = the sigma the model is queried at, which the detail nudge "
+                           "moves below the trajectory's (v1: changing detail_amount also moves the guidance); "
+                           "true = the trajectory sigma - detail and guidance tuned independently.")
+_DETAIL_SPACE_TOOLTIP = ("EXPERIMENTAL (Sampler v2): step = the v1 detail envelope over the step index "
+                         "(detail_start/end/peak are fractions of the run - its meaning moves with the step count, "
+                         "restart fraction, self-refine); sigma = over the state's sigma: 0 above "
+                         "detail_sigma_hi, peak at detail_sigma_peak, 0 below detail_sigma_lo (phase-aware "
+                         "default 0.90 / 0.50 / 0.12: no nudge on the composition, strongest in the texture tail).")
+_X0_ORDER_TOOLTIP = ("EXPERIMENTAL (Sampler v2): terminal x0 extrapolation through the last 2 model calls "
+                     "(1, linear, v1) or 3 (2, quadratic). Needs x0_extrapolation > 0.")
+_X0_TRUST_TOOLTIP = ("EXPERIMENTAL (Sampler v2): trust region of the terminal x0 extrapolation - the step is "
+                     "limited per pixel to this many times the local (3x3) rms of the last x0 step, so isolated "
+                     "overshoots (halos, speckle) are cut and smooth extrapolation passes. 0 = off. Try 1.0.")
+_PC_TOOLTIP = ("EXPERIMENTAL (Sampler v2): predictor-corrector (Heun) at three strategic steps - the "
+               "composition -> identity boundary, the first restart-tail step, the last detail step; one extra "
+               "model call each. selective = always; auto = only where the x0 estimate is still moving.")
+_REFINE_MODE_TOOLTIP = ("EXPERIMENTAL (Sampler v2): on = the self-refine pass in the SIGMAS runs as given; "
+                        "auto = it is skipped (no model calls) when the draft stopped moving over the identity "
+                        "phase. Only acts on a schedule with a refine pass (Scheduler refine_steps > 0).")
 _PAG_SCALE_TOOLTIP = ("EXPERIMENTAL (v1.4): perturbed-attention guidance. Inside [pag_lo, pag_hi] a "
                       "second conditional forward runs with identity self-attention in pag_blocks and "
                       "denoised += pag_scale * (cond - perturbed): structure/anatomy guidance that "
@@ -226,7 +253,12 @@ class KreaPhotonSampler:
         a_latent, a_cond = VARIETY_LEVELS[variety]
         alpha = _preset_alpha(p, latent_image)
         use_jump = coherence in ("jump", "jump+self_refine")
-        refine_steps = COHERENCE["refine_steps"] if coherence in ("self_refine", "jump+self_refine") else 0
+        # self-refine: an explicit coherence request runs it; a preset with refine 'auto'
+        # (Sampler v2, quality-plus) builds the pass and lets the loop skip a stable draft
+        explicit_refine = coherence in ("self_refine", "jump+self_refine")
+        preset_refine_auto = p.get("refine", "off") == "auto"
+        refine_steps = COHERENCE["refine_steps"] if (explicit_refine or preset_refine_auto) else 0
+        refine_mode = "auto" if (preset_refine_auto and not explicit_refine) else "on"
         # LoRA phase plan (KreaPhoton LoRA Phase nodes upstream) -> phase models;
         # explicitly connected clean_model / texture_model win for their phase
         plan_clean, model, plan_texture = build_phase_models(model)
@@ -242,7 +274,9 @@ class KreaPhotonSampler:
             sigmas = build_schedule(p["n_steps"], alpha=alpha, restart_frac=p["restart_frac"],
                                     sigma_r=p["sigma_r"], plunge=p["plunge"],
                                     refine_steps=refine_steps if p["plunge"] else 0,
-                                    refine_sigma=COHERENCE["refine_sigma"])
+                                    refine_sigma=COHERENCE["refine_sigma"],
+                                    plunge_sigma=p.get("plunge_sigma", PLUNGE_SIGMA_FLOOR),
+                                    soft_plunge=p.get("soft_plunge", 0))
             noise = _blend_noise(model, latent_image, seed, seed_b, blend)
         restart_hook = _restart_hook_for(restart_enhance, vae)
 
@@ -265,6 +299,11 @@ class KreaPhotonSampler:
                 contraction=p["contraction"], per_channel_contraction=False,
                 manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
                 detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
+                solver=p["sampler"], eta_tail=p.get("eta_tail") if denoise >= 1.0 else None,
+                pc=p.get("pc", "off") if denoise >= 1.0 else "off",
+                refine_mode=refine_mode if denoise >= 1.0 else "on",
+                guidance_sigma=p.get("guidance_sigma", "model"), detail_space=p.get("detail_space", "step"),
+                x0_extrap_order=p.get("x0_extrap_order", 1), x0_trust=p.get("x0_trust", 0.0),
                 eta0=eta0, sigma_gate=p["sigma_gate"],
                 x0_extrapolation=p["x0_extrapolation"],
                 clean_model=clean_model, composition_end=0.85,
@@ -305,14 +344,18 @@ class KreaPhotonSamplerAdvanced:
                                                      "sharper edges, more saturation (up to 1.4 there). Photo "
                                                      "styles usually prefer <= 1.0."}),
                 "per_channel_contraction": ("BOOLEAN", {"default": False}),
-                "guidance_mode": (["off", "flat", "window"], {"default": "off"}),
+                "guidance_mode": (["off", "flat", "window", "band"], {"default": "off"}),
                 "flat_cfg": ("FLOAT", {"default": GUIDANCE["flat_cfg"], "min": 1.0, "max": 4.0, "step": 0.01}),
                 "delta": ("FLOAT", {"default": GUIDANCE["delta"], "min": 0.0, "max": 3.0, "step": 0.01,
-                                    "tooltip": "Window guidance strength: g(sigma) = 1 + delta * smoothstep "
-                                               "in [guidance_lo, guidance_hi]. 1.25 V1-validated; 1.5 "
-                                               "hallucinates. When variety_a_latent > 0 the effective delta "
-                                               "is delta * (1 - 0.45 * a_latent) - variety consumes the "
-                                               "hallucination budget (V16b)."}),
+                                    "tooltip": "Guidance strength. window (M6 ramp): g(sigma) = 1 + delta * "
+                                               "smoothstep rising across [guidance_lo, guidance_hi], FULL "
+                                               "1 + delta above guidance_hi (the whole composition phase). "
+                                               "band (Sampler v2, experimental): 1 + delta * sin^2 only "
+                                               "inside (guidance_lo, guidance_hi), 1.0 outside. 1.25 "
+                                               "V1-validated (window); 1.5 hallucinates. When "
+                                               "variety_a_latent > 0 the effective delta is delta * (1 - 0.45 "
+                                               "* a_latent) - variety consumes the hallucination budget "
+                                               "(V16b)."}),
                 "guidance_lo": ("FLOAT", {"default": GUIDANCE["lo"], "min": 0.0, "max": 1.0, "step": 0.01}),
                 "guidance_hi": ("FLOAT", {"default": GUIDANCE["hi"], "min": 0.0, "max": 1.0, "step": 0.01}),
                 "variety_a_latent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
@@ -367,6 +410,18 @@ class KreaPhotonSamplerAdvanced:
                                                         "in the Scheduler (refine_steps)."}),
                 "coherence_jump_sigma": ("FLOAT", {"default": COHERENCE["jump_sigma"], "min": 0.5, "max": 1.0,
                                                    "step": 0.01}),
+                "eta_tail": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 2.0, "step": 0.01,
+                                       "tooltip": _ETA_TAIL_TOOLTIP}),
+                "guidance_sigma": (["model", "true"], {"default": "model", "tooltip": _GUIDANCE_SIGMA_TOOLTIP}),
+                "detail_space": (["step", "sigma"], {"default": "step", "tooltip": _DETAIL_SPACE_TOOLTIP}),
+                "detail_sigma_hi": ("FLOAT", {"default": DETAIL_SIGMA[0], "min": 0.0, "max": 1.0, "step": 0.01}),
+                "detail_sigma_peak": ("FLOAT", {"default": DETAIL_SIGMA[1], "min": 0.0, "max": 1.0, "step": 0.01}),
+                "detail_sigma_lo": ("FLOAT", {"default": DETAIL_SIGMA[2], "min": 0.0, "max": 1.0, "step": 0.01}),
+                "x0_extrap_order": ("INT", {"default": 1, "min": 1, "max": 2, "tooltip": _X0_ORDER_TOOLTIP}),
+                "x0_trust": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 8.0, "step": 0.05,
+                                       "tooltip": _X0_TRUST_TOOLTIP}),
+                "pc": (["off", "selective", "auto"], {"default": "off", "tooltip": _PC_TOOLTIP}),
+                "refine_mode": (["on", "auto"], {"default": "on", "tooltip": _REFINE_MODE_TOOLTIP}),
             },
         }
 
@@ -382,7 +437,10 @@ class KreaPhotonSamplerAdvanced:
               vae=None, variety_seed=-1, seed_b=-1, blend=0.0, x0_extrapolation=0.0,
               guidance_rescale=0.0, pag_scale=0.0, pag_lo=PAG["lo"], pag_hi=PAG["hi"],
               pag_blocks=PAG["blocks"], restart_enhance="off", texture_model=None, texture_start=0.65,
-              coherence_jump=0.0, coherence_jump_sigma=COHERENCE["jump_sigma"]):
+              coherence_jump=0.0, coherence_jump_sigma=COHERENCE["jump_sigma"], eta_tail=-1.0,
+              guidance_sigma="model", detail_space="step", detail_sigma_hi=DETAIL_SIGMA[0],
+              detail_sigma_peak=DETAIL_SIGMA[1], detail_sigma_lo=DETAIL_SIGMA[2], x0_extrap_order=1,
+              x0_trust=0.0, pc="off", refine_mode="on"):
         v_seed = seed if variety_seed < 0 else int(variety_seed)
         plan_clean, model, plan_texture = build_phase_models(model)
         clean_model = _explicit_phase_model(clean_model, plan_clean, "composition")
@@ -402,6 +460,10 @@ class KreaPhotonSamplerAdvanced:
                 manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
                 detail_amount=detail_amount, detail_start=detail_start, detail_end=detail_end,
                 detail_peak=detail_peak, order=_ORDER_FROM_SAMPLER_NAME[sampler_order],
+                solver=sampler_order, eta_tail=None if eta_tail < 0.0 else float(eta_tail),
+                guidance_sigma=guidance_sigma, detail_space=detail_space,
+                detail_sigma=(float(detail_sigma_hi), float(detail_sigma_peak), float(detail_sigma_lo)),
+                x0_extrap_order=int(x0_extrap_order), x0_trust=float(x0_trust), pc=pc, refine_mode=refine_mode,
                 eta0=eta0, sigma_gate=sigma_gate, x0_extrapolation=x0_extrapolation,
                 clean_model=clean_model, composition_end=composition_end,
                 variety_a_latent=variety_a_latent, variety_a_cond=variety_a_cond, variety_seed=v_seed,
@@ -448,6 +510,16 @@ class KreaPhotonScheduler:
                                            "tooltip": "Re-noise level of the self-refine pass. 0.85 keeps the "
                                                       "draft's layout (~img2img 0.6) and re-renders bodies / "
                                                       "faces / clothing; 0.93+ lets the model re-decide more."}),
+                "plunge_sigma": ("FLOAT", {"default": PLUNGE_SIGMA_FLOOR, "min": 0.5, "max": 0.95, "step": 0.01,
+                                           "tooltip": "EXPERIMENTAL (Sampler v2): the plunge floor - where the "
+                                                      "structure phase stops and the model one-shots the draft. "
+                                                      "0.75 = V2-validated default; lower = the draft forms later "
+                                                      "(hands, groups, text may benefit), higher = earlier."}),
+                "soft_plunge": ("INT", {"default": 0, "min": 0, "max": SOFT_PLUNGE_MAX,
+                                        "tooltip": "EXPERIMENTAL (Sampler v2): 1 = one bridge step between the "
+                                                   "plunge floor and the draft readout (0.75 -> 0.375 -> 0), taken "
+                                                   "from the structure steps - model calls unchanged. 0 = the hard "
+                                                   "plunge (v1). Longer bridges were measured to break the draft."}),
             },
         }
 
@@ -456,13 +528,14 @@ class KreaPhotonScheduler:
     CATEGORY = CATEGORY
 
     def build(self, steps, alpha, restart_frac, sigma_r, plunge, latent=None, refine_steps=0,
-              refine_sigma=COHERENCE["refine_sigma"]):
+              refine_sigma=COHERENCE["refine_sigma"], plunge_sigma=PLUNGE_SIGMA_FLOOR, soft_plunge=0):
         if latent is not None:
             h, w = _latent_hw(latent)
             alpha = alpha_for_latent(h, w, alpha)
         return (build_schedule(steps, alpha=alpha, restart_frac=restart_frac,
                                sigma_r=sigma_r, plunge=plunge,
-                               refine_steps=refine_steps if plunge else 0, refine_sigma=refine_sigma),)
+                               refine_steps=refine_steps if plunge else 0, refine_sigma=refine_sigma,
+                               plunge_sigma=float(plunge_sigma), soft_plunge=int(soft_plunge)),)
 
 
 class KreaPhotonEmptyLatent:
@@ -803,7 +876,7 @@ class KreaPhotonUpscale:
                 delta=GUIDANCE["delta"], lo=GUIDANCE["lo"], hi=GUIDANCE["hi"],
                 contraction=p["contraction"], per_channel_contraction=False,
                 manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
-                detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
+                detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]], solver=p["sampler"],
                 eta0=float(extra.get("eta0", 0.0)), sigma_gate=0.10,   # refine: ancestral noise = speckle (2026-07-07)
                 texture_model=texture_model, texture_start=UPSCALE_TEXTURE_START,
                 tiler=tiler, x0_hook=anchor,

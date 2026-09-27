@@ -155,6 +155,12 @@ def test_node(cm):
         assert c["kw"]["eta0"] == p["eta0"] and c["kw"]["coherence_jump"] == 0.0 and c["kw"]["x0_extrapolation"] == 0.0
     assert tuple(drafts.shape) == (4, 136 * 8, 200 * 8, 3) and sheet.shape[0] == 1 and best_seed == 5
     assert "no layout spec (unranked)" in report and "best_seed 5 (#1)" in report, report
+    # Sampler v2: the head integrates with the preset's own solver / eta_tail, like the Sampler does
+    assert all(c["kw"]["solver"] == p["sampler"] and c["kw"]["eta_tail"] is None for c in calls)
+    calls.clear()
+    node.draft(model, "pos", latent, _FakeVAE(), 5, "turbo/quality-v2", 1, 0, 1000, "off")
+    assert calls[0]["kw"]["solver"] == "rf_2m" and calls[0]["kw"]["eta_tail"] == 0.0, calls[0]["kw"]
+    calls.clear()
     # draft_calls 2 -> 3-entry head; coherence jump forwarded; explicit clean_model wins for the head
     calls.clear()
     clean = _FakeModel(name="clean")

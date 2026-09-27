@@ -22,6 +22,15 @@ PLUNGE_SIGMA_FLOOR = 0.75              # M1 default. ACTIVE: all turbo presets s
                                         # (V2, 2026-07-05), so composition crystallizes at this
                                         # floor's plunge readout; anything re-noised below 0.75
                                         # (e.g. restart @ sigma_r=0.65) can only affect texture.
+SOFT_PLUNGE_MAX = 1                    # Sampler v2 P2.3, MEASURED 2026-09-27: bridge steps of <= 0.25
+                                        # are ordinary steps for the M2 detail nudge and at detail 0.7
+                                        # they wreck the draft (colored pebbles over the face); the
+                                        # single bridge 0.75 -> 0.375 is plunge-sized (> PLUNGE_DSIGMA),
+                                        # nudge-free and clean
+TAIL_SIGMA_MAX = 0.75                  # Sampler v2: an ascending jump landing BELOW this re-noises
+                                        # the texture tail (restart); at/above it, the identity phase
+                                        # (self-refine). Equal to the default plunge floor but a
+                                        # separate constant - the floor is a parameter since v2 (P2.2).
 MIN_STEPS_FOR_RESTART = 4              # below this the restart segment is dropped (F05 contract:
                                         # model calls == steps for EVERY steps >= 1)
 SIGMA_MAX_TOLERANCE = 1e-4             # flow sigma lives in [0, 1]; anything above is a foreign
@@ -80,7 +89,8 @@ def alpha_for_latent(h_lat: int, w_lat: int, alpha_max: float = ALPHA) -> float:
 
 def build_schedule(n_steps: int, alpha: float = ALPHA, restart_frac: float = 0.0,
                     sigma_r: float = 0.6, plunge: bool = False, q: float = 1.0,
-                    refine_steps: int = 0, refine_sigma: float = 0.85) -> torch.Tensor:
+                    refine_steps: int = 0, refine_sigma: float = 0.85,
+                    plunge_sigma: float = PLUNGE_SIGMA_FLOOR, soft_plunge: int = 0) -> torch.Tensor:
     """Analytic schedule family for krea2.
 
     Structure segment in t-space: n_m points
@@ -105,6 +115,14 @@ def build_schedule(n_steps: int, alpha: float = ALPHA, restart_frac: float = 0.0
     with the whole draft as a prior (0.85 ~ img2img denoise 0.6: layout kept,
     incoherent detail re-rendered). Adds refine_steps model calls on top of n_steps
     (documented: total calls == n_steps + refine_steps).
+
+    plunge_sigma (Sampler v2 P2.2): the plunge floor, PLUNGE_SIGMA_FLOOR by default (the
+    self-refine pass re-plunges at the same floor). soft_plunge=k (P2.3, plunge only): k
+    bridge points plunge_sigma*(1 - j/(k+1)) between the floor and the readout (k=1:
+    0.75 -> 0.375 -> 0), carved out of the structure points so model calls stay ==
+    n_steps; capped at SOFT_PLUNGE_MAX (measured: k >= 2 bridges get the detail nudge and
+    break the draft) and so that >= 2 structure points remain. Defaults reproduce the v1
+    schedule bit-for-bit.
     """
     n_steps = max(1, int(n_steps))
     n_r = 0
@@ -121,12 +139,15 @@ def build_schedule(n_steps: int, alpha: float = ALPHA, restart_frac: float = 0.0
     sigs = []
     t_hi = 1.0
     if plunge:
-        t_lo_eff = t_from_sigma(PLUNGE_SIGMA_FLOOR, alpha)
-        pts = max(2, n_m)
+        t_lo_eff = t_from_sigma(plunge_sigma, alpha)
+        k_soft = max(0, min(int(soft_plunge), SOFT_PLUNGE_MAX, n_m - 2))
+        pts = max(2, n_m - k_soft)
         for i in range(pts):
             u = i / (pts - 1)
             t = t_hi - (t_hi - t_lo_eff) * (u ** q)
             sigs.append(sigma_from_t(t, alpha))
+        for j in range(1, k_soft + 1):
+            sigs.append(float(plunge_sigma) * (1.0 - j / (k_soft + 1)))
     else:
         t_lo_eff = alpha / (alpha + (TIMESTEPS - 1.0))
         for i in range(n_m):
@@ -140,8 +161,8 @@ def build_schedule(n_steps: int, alpha: float = ALPHA, restart_frac: float = 0.0
         # self-refine segment: refine_sigma -> ... -> floor (k points, uniform in t),
         # then a plunge readout; only meaningful with a plunge structure, so the
         # descent always ends at the plunge floor and re-plunges.
-        rs = max(PLUNGE_SIGMA_FLOOR + 1e-3, min(0.999, float(refine_sigma)))
-        t_a, t_b = t_from_sigma(rs, alpha), t_from_sigma(PLUNGE_SIGMA_FLOOR, alpha)
+        rs = max(plunge_sigma + 1e-3, min(0.999, float(refine_sigma)))
+        t_a, t_b = t_from_sigma(rs, alpha), t_from_sigma(plunge_sigma, alpha)
         for i in range(k):
             u = i / max(k - 1, 1)
             sigs.append(sigma_from_t(t_a - (t_a - t_b) * u, alpha) if k > 1 else rs)

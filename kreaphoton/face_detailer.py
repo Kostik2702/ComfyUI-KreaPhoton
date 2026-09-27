@@ -354,7 +354,7 @@ class KreaPhotonFaceDetailer:
                             delta=GUIDANCE["delta"], lo=GUIDANCE["lo"], hi=GUIDANCE["hi"],
                             add_noise=add_noise, contraction=1.0, per_channel_contraction=False,
                             manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
-                            detail_amount=float(c["detail_a"]), order=order,
+                            detail_amount=float(c["detail_a"]), order=order, solver=c["sampler"],
                             eta0=0.0, sigma_gate=0.10,   # refine: ancestral noise = speckle (2026-07-07)
                             ref_hook=ref_hook,
                         )

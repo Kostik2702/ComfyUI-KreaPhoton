@@ -242,6 +242,7 @@ def test_node():
     calls.clear()
     out_img, out_mask, report = node.detail(model, "pos", img, _FakeVAE(), 5, "standard", 1)
     assert out_img.shape == img.shape and out_mask.shape == (1, 512, 768)
+    assert all(c["kw"]["solver"] == presets.FACE_COMMON["sampler"] for c in calls), "sampler NAME reaches the loop"
     assert len(calls) == 2, len(calls)                      # two passes, one attempt each
     assert face_builds == [1.5] and "identity boost x1.50: a 1.50" in report, (face_builds, report)
     # never a phase split (a noise_mask cannot cross a segment boundary - confetti ring 2026-09-15)

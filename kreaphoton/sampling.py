@@ -21,17 +21,31 @@ now bit-identical between the simple and Advanced nodes.
 The only remaining multi-segment path is the optional clean_model split
 (composition on a clean checkpoint, LoRA phase on `model`) - ZPhoton pattern,
 still experimental on krea2 LoRA stacks, and it keeps the eta0 safety guard.
+
+Sampler v2, iteration 1 (2026-09-27, proposal E:\\dk\\KreaPhoton_Sampler_v2_Technical_Proposal.md,
+every new mechanism opt-in, the default path bit-exact): the `rf_2m` solver,
+`eta_tail` for the restart segment, and per-lifecycle step telemetry (`stats`).
+Finding behind it: in txt2img the presets' gated eta (eta0 1.0) makes every
+non-final model call an ancestral step, so `euler_2m` never reached its AB2 branch -
+bit-identical to `euler` on every v1 preset at denoise 1 (tests/test_sampling.py
+[24]). AB2 does run where eta0 is 0: the refine path (denoise < 1) and the Advanced
+node's default.
 """
+import math
+
 import comfy.model_management
 import comfy.sample
 import comfy.samplers
 import comfy.utils
 import torch
 
-from .guidance import VARIETY_FLAG, KreaPhotonGuider
+import os
+
+from . import trajectory as trj
+from .guidance import TRUE_SIGMA_KEY, VARIETY_FLAG, KreaPhotonGuider
 from .noise import contract_noise
-from .presets import effective_delta
-from .schedules import validate_sigmas
+from .presets import ADAPTIVE, DETAIL_SIGMA, effective_delta
+from .schedules import TAIL_SIGMA_MAX, validate_sigmas
 from .variety import cond_tap_rotation, lf_recompose
 
 
@@ -51,6 +65,17 @@ def _detail_envelope(p: float, start: float, end: float, peak: float) -> float:
     return _smoothstep(w)
 
 
+def _detail_envelope_sigma(sigma: float, hi: float, peak: float, lo: float) -> float:
+    """Detail-pressure weight as a function of the STATE's sigma (Sampler v2 P1.5): 0 at/above
+    hi and at/below lo, 1 at peak, smoothstep ramps between - the step envelope's shape, but
+    its meaning no longer moves with the step count, restart fraction, self-refine, a phase
+    split or a foreign grid. Degenerate (not hi > peak > lo) -> 0."""
+    if not hi > peak > lo or sigma >= hi or sigma <= lo:
+        return 0.0
+    w = (hi - sigma) / (hi - peak) if sigma > peak else (sigma - lo) / (peak - lo)
+    return _smoothstep(w)
+
+
 GATE_HI = 0.35   # M5-proven upper edge of the gated-eta ramp; lower edge is the
                   # calibratable preset field sigma_gate (M5-proven default 0.10).
 PLUNGE_DSIGMA = 0.25          # a descending step larger than this is a plunge: M2 nudge
@@ -61,6 +86,102 @@ X0_EXTRAP_MAX_FACTOR = 2.0    # cap on the linear x0-trajectory extrapolation fa
                                # a foreign grid with a tiny last step could otherwise
                                # extrapolate wildly.
 VARIETY_STATES = ("off", "pending", "active")
+SOLVERS = ("euler", "euler_2m", "rf_2m")   # euler_2m = legacy fixed-coefficient AB2 on d;
+                                           # rf_2m = DPM-Solver++(2M) on the x0 history (v2)
+RF2M_MIN_STEP_RATIO = 0.5     # r = h_prev/h below this (extrapolation weight k = 1/(2r) > 1) -> first
+                              # order: after a near-flat step k is unbounded while the detail nudge
+                              # keeps x0 - x0_prev finite (review M1: |rf_2m - euler| ~141 on a foreign
+                              # grid). The calibrated restart tails sit at r 0.75-0.98.
+
+
+DETAIL_SPACES = ("step", "sigma")
+PC_MODES = ("off", "selective", "auto")
+REFINE_MODES = ("on", "auto")
+
+
+def tail_start_index(sigmas):
+    """Global index of the first step of the restart TAIL - the steps after the last ascending
+    jump when that jump lands below TAIL_SIGMA_MAX (a self-refine jump lands above it) -
+    or None. A property of the whole schedule, so a phase split hands it to every segment
+    (like the detail envelope's progress_offset)."""
+    s = [float(v) for v in sigmas]
+    jumps = [k for k in range(len(s) - 1) if s[k + 1] > s[k] + 1e-6]
+    if jumps and s[jumps[-1] + 1] < TAIL_SIGMA_MAX:
+        return jumps[-1] + 1
+    return None
+
+
+def pc_step_indices(sigmas, composition_end=0.85):
+    """Strategic steps of the selective predictor-corrector (proposal §17), as global indices
+    of NON-final model-call steps: the first one at/below composition_end (composition ->
+    identity boundary), the first one after the restart jump, and the last one at/below
+    TAIL_SIGMA_MAX (a late detail step). Sorted, unique; empty on a Composition Drafts head."""
+    s = [float(v) for v in sigmas]
+    calls = [i for i in range(len(s) - 1) if s[i + 1] <= s[i] + 1e-6 and s[i] > 1e-6 and s[i + 1] > 1e-6]
+    picks = set()
+    first = next((i for i in calls if s[i] <= composition_end + 1e-9), None)
+    if first is not None:
+        picks.add(first)
+    t = tail_start_index(s)
+    if t is not None and t in calls:
+        picks.add(t)
+    late = [i for i in calls if s[i] <= TAIL_SIGMA_MAX + 1e-9]
+    if late:
+        picks.add(late[-1])
+    return sorted(picks)
+
+
+def _rf_lambda(sigma: float) -> float:
+    """Half log-SNR of the CONST / rectified-flow state x = (1-sigma)*x0 + sigma*eps,
+    lambda = log((1-sigma)/sigma) - the time variable of DPM-Solver for this family."""
+    return math.log((1.0 - sigma) / sigma)
+
+
+def _rf2m_x0(x0, x0_prev, s_prev: float, s_cur: float, s_next: float):
+    """Effective x0 of a DPM-Solver++(2M) step s_cur -> s_next on a CONST model.
+
+    The step itself stays the exact first-order transport x_next = (s_next/s_cur)*x +
+    (1 - s_next/s_cur)*x0_eff (RF Euler == DDIM: exact for a constant x0); the second
+    order comes from extrapolating the x0 predictions along lambda,
+    x0_eff = (1 + 1/(2r))*x0 - 1/(2r)*x0_prev with r = h_prev/h - variable-step by
+    construction, unlike the fixed 1.5/-0.5 AB2 of euler_2m. The sigmas are TRUE
+    trajectory sigmas (the state's), not the detail-nudged sigma_model."""
+    lam_cur = _rf_lambda(s_cur)
+    h = _rf_lambda(s_next) - lam_cur
+    k = h / (2.0 * (lam_cur - _rf_lambda(s_prev)))
+    return (1.0 + k) * x0 - k * x0_prev
+
+
+def format_stats(stats: dict, guider=None) -> str:
+    """One-line numerical telemetry of a sampler lifecycle (Sampler v2 P0.2): which
+    integration branch every model call took, and the history resets by reason."""
+    resets = ",".join("%s:%d" % kv for kv in sorted(stats.get("resets", {}).items())) or "-"
+    line = ("solver=%s calls=%d ancestral=%d euler=%d ab2=%d rf2m=%d readout=%d jumps=%d history_resets=%s"
+            % (stats.get("solver"), stats.get("model_calls", 0), stats.get("ancestral", 0),
+               stats.get("euler", 0), stats.get("ab2", 0), stats.get("rf2m", 0), stats.get("final", 0),
+               stats.get("jumps", 0), resets))
+    if stats.get("heun") or stats.get("pc"):
+        line += " heun=%d pc_calls=%d" % (stats.get("heun", 0), stats.get("pc", 0))
+    if stats.get("pc_motion"):
+        line += " pc_motion=%s" % "/".join("-" if v is None else "%.3f" % v for v in stats["pc_motion"])
+    if stats.get("refine_motion") is not None:
+        line += " refine=%s(mf %.3f)" % ("skipped" if stats.get("refine_skipped") else "run",
+                                         stats["refine_motion"])
+    if guider is not None:
+        line += " guided=%d/%d" % (getattr(guider, "n_guided", 0), getattr(guider, "n_calls", 0))
+    return line
+
+
+def format_trace(stats: dict) -> str:
+    """The per-call x0 motion record of a traced lifecycle (proposal P3.1), one token per
+    model call: sigma:all/lf/mf/hf relative change against the previous call's x0."""
+    parts = []
+    for r in stats.get("traj", []):
+        if r.get("mf") is None:
+            parts.append("%.3f:-" % r["sigma"])
+        else:
+            parts.append("%.3f:%.3f/%.3f/%.3f/%.3f" % (r["sigma"], r["all"], r["lf"], r["mf"], r["hf"]))
+    return "x0 motion (sigma:all/lf/mf/hf) " + " ".join(parts)
 
 
 def _gated_eta(sigma_next: float, eta0: float, sigma_gate: float, gate_hi: float = GATE_HI) -> float:
@@ -167,9 +288,63 @@ def kreaphoton_sampler_loop(model, x, sigmas, extra_args=None, callback=None, di
                             variety_state="off", x0_extrapolation=0.0,
                             progress_offset=0, progress_total=0, restart_hook=None,
                             coherence_jump=0.0, coherence_jump_sigma=0.93,
-                            tiler=None, x0_hook=None, ref_hook=None):
+                            tiler=None, x0_hook=None, ref_hook=None,
+                            solver=None, eta_tail=None, stats=None, tail_start=None,
+                            detail_space="step", detail_sigma=None, x0_extrap_order=1, x0_trust=0.0,
+                            pc="off", pc_steps=None, pc_threshold=None, composition_end=0.85,
+                            refine_mode="on", refine_threshold=None, trace=False):
     """The KSAMPLER sampler_function. Pure numerical loop, testable with a mock
     model callable (tests/test_sampling.py).
+
+    Sampler v2 iteration 2 (all default to the v1 behaviour):
+    detail_space:  "step" (v1: envelope over p = step index / total) | "sigma": the envelope
+                   over the state's sigma, detail_sigma = (hi, peak, lo), default
+                   presets.DETAIL_SIGMA - split-invariant without progress_offset.
+    x0_extrap_order / x0_trust: terminal x0 extrapolation through the last two (1, v1) or
+                   three (2, quadratic Lagrange) model calls of the segment; x0_trust > 0
+                   limits the extrapolation step pointwise to x0_trust x the local (3x3)
+                   rms of the last x0 step (trajectory.trust_clamp). 1 / 0 = the v1 code.
+    pc:            predictor-corrector at the strategic steps (pc_step_indices, GLOBAL
+                   indices via pc_steps for a phase split): "selective" = always, "auto" =
+                   when the x0 estimate moved more than pc_threshold (presets.ADAPTIVE)
+                   since the previous model call. Heun on the deterministic part - the
+                   whole step, or the down-step to sigma_down of an ancestral step before
+                   its re-noise; the corrector is one extra model call at the target sigma
+                   (un-nudged). "off" = v1.
+    refine_mode:   "on" (v1) | "auto": at a self-refine jump (lands at/above TAIL_SIGMA_MAX)
+                   the refine segment is skipped - no RNG draw, no model call - when the
+                   draft's mid-frequency change over the identity phase (x0 at the first
+                   call at/below composition_end -> the plunge readout) is below
+                   refine_threshold (presets.ADAPTIVE).
+    trace:         record trajectory.motion against the previous call's x0 at every model
+                   call into stats["traj"] (proposal P3.1).
+    Every model call also publishes its TRUE trajectory sigma under
+    guidance.TRUE_SIGMA_KEY in model_options (read only by a guider in guidance_sigma
+    "true" mode).
+
+    solver (Sampler v2): "euler" | "euler_2m" | "rf_2m"; None = derived from `order`
+                   (1 -> euler, 2 -> euler_2m), bit-exact with the v1 calls. euler_2m is
+                   the legacy AB2 on d with fixed equal-step coefficients; rf_2m is
+                   DPM-Solver++(2M) on the x0 history (_rf2m_x0). Both multistep
+                   solvers need two CONSECUTIVE deterministic steps - under the presets'
+                   txt2img eta (eta0 1.0, gated) they get none, every non-final step is
+                   ancestral; with eta0 0 (refine path, Advanced default) they run.
+    eta_tail:      eta0 replacement for the TAIL - the model-call steps after the last
+                   ascending jump when that jump lands below PLUNGE_SIGMA_FLOOR (the
+                   restart segment; a self-refine jump lands above the floor and keeps
+                   eta0). Still gated by sigma_gate. 0 = deterministic restart tail
+                   (proposal P1 "stochastic structure + deterministic texture tail").
+                   None = eta0 everywhere (bit-exact). No-op on a schedule without such
+                   a jump.
+    tail_start:    GLOBAL index of the tail's first step (tail_start_index of the full
+                   schedule) for a segment of a phase split, compared against
+                   progress_offset + i; None = computed from this call's own sigmas.
+    stats:         optional dict filled with the branch counters of this lifecycle
+                   (model_calls / ancestral / euler / ab2 / rf2m / final / jumps and
+                   resets = {reason: count} of multistep histories actually dropped) -
+                   see format_stats. Every trajectory-changing event declares the
+                   history invalid: restart jump, ancestral step, variety re-composition,
+                   coherence jump, readout.
 
     ref_hook (2026-09-22 spike, ref_mean.py): optional callable(x, denoised,
                    sigma, base_model) -> denoised applied after x0_hook; unlike
@@ -231,14 +406,56 @@ def kreaphoton_sampler_loop(model, x, sigmas, extra_args=None, callback=None, di
     extra_args = {} if extra_args is None else extra_args
     if variety_state not in VARIETY_STATES:
         raise ValueError(f"variety_state must be one of {VARIETY_STATES}, got {variety_state!r}")
+    if solver is None:
+        solver = "euler_2m" if order >= 2 else "euler"
+    if solver not in SOLVERS:
+        raise ValueError(f"solver must be one of {SOLVERS}, got {solver!r}")
+    if detail_space not in DETAIL_SPACES:
+        raise ValueError(f"detail_space must be one of {DETAIL_SPACES}, got {detail_space!r}")
+    if pc not in PC_MODES:
+        raise ValueError(f"pc must be one of {PC_MODES}, got {pc!r}")
+    if refine_mode not in REFINE_MODES:
+        raise ValueError(f"refine_mode must be one of {REFINE_MODES}, got {refine_mode!r}")
+    if int(x0_extrap_order) not in (1, 2):
+        raise ValueError(f"x0_extrap_order must be 1 or 2, got {x0_extrap_order!r}")
+    d_hi, d_peak, d_lo = DETAIL_SIGMA if detail_sigma is None else detail_sigma
+    pc_thr = ADAPTIVE["pc_motion"] if pc_threshold is None else float(pc_threshold)
+    refine_thr = ADAPTIVE["refine_mf_motion"] if refine_threshold is None else float(refine_threshold)
     s_in = x.new_ones([x.shape[0]])
     n = len(sigmas) - 1
     n_total = int(progress_total) if int(progress_total) > 0 else n
     p_off = int(progress_offset)
     gen = torch.Generator(device="cpu").manual_seed((int(restart_seed) + 0x5EED) & 0xffffffffffffffff)
-    old_d = None
+    old_d = None                  # euler_2m history: d of the previous deterministic step
+    old_x0 = old_s = None         # rf_2m history: its x0 prediction and true sigma
     prev_denoised = None
     prev_sigma_model = None
+    prev2_denoised = prev2_sigma_model = None   # one call further back (quadratic extrapolation)
+    mprev = None                  # x0 of the previous model call, never reset (motion metrics only)
+    x0_anchor = None              # x0 at the first call at/below composition_end (refine 'auto')
+    skip_until = -1               # refine 'auto': last index of a skipped refine segment
+
+    st = {} if stats is None else stats
+    st.update(solver=solver, model_calls=0, ancestral=0, euler=0, ab2=0, rf2m=0, heun=0, final=0, jumps=0,
+              resets={}, pc=0, pc_motion=[], refine_skipped=0, refine_motion=None, traj=[])
+
+    def drop_history(reason):
+        # counted only when the ACTIVE solver's history is lost (euler keeps none)
+        nonlocal old_d, old_x0, old_s
+        live = old_d if solver == "euler_2m" else old_x0 if solver == "rf_2m" else None
+        if live is not None:
+            st["resets"][reason] = st["resets"].get(reason, 0) + 1
+        old_d = old_x0 = old_s = None
+
+    # restart tail for eta_tail, as a LOCAL index (a segment gets the global one minus its offset)
+    tail_from = None
+    if eta_tail is not None:
+        tail_from = tail_start_index(sigmas) if tail_start is None else int(tail_start) - p_off
+    # strategic predictor-corrector steps as GLOBAL indices (compared against p_off + i)
+    pc_set = set()
+    if pc != "off":
+        pc_set = (set(int(k) for k in pc_steps) if pc_steps is not None
+                  else {k + p_off for k in pc_step_indices(sigmas, composition_end)})
 
     # Variety hand-off to the guider (cond axis). extra_args["model_options"] is
     # the per-lifecycle clone comfy passes to every model call of this loop
@@ -252,20 +469,50 @@ def kreaphoton_sampler_loop(model, x, sigmas, extra_args=None, callback=None, di
     model_options[VARIETY_FLAG] = variety_state == "active"
     jump_done = coherence_jump <= 0.0
 
+    def call(xx, sig_model, sig_true):
+        # one model evaluation (tiled or not) + the x0 hooks; the guider may read sig_true
+        model_options[TRUE_SIGMA_KEY] = sig_true
+        if tiler is not None:
+            den = tiler(model, xx, sig_model, extra_args)
+        else:
+            den = model(xx, sig_model * s_in, **extra_args)
+        if x0_hook is not None:
+            den = x0_hook(den, sig_model)
+        if ref_hook is not None:
+            base_model = getattr(getattr(model, "inner_model", None), "inner_model", None)
+            den = ref_hook(xx, den, sig_true, base_model)
+        return den
+
     for i in range(n):
+        if i <= skip_until:
+            continue
         s_cur = float(sigmas[i])
         s_next = float(sigmas[i + 1])
 
         # --- restart segment: ascending jump -> proper flow re-noise (M3) ---
         if s_next > s_cur + 1e-6:
+            if refine_mode == "auto" and s_next >= TAIL_SIGMA_MAX - 1e-9:
+                # a self-refine jump: skip the whole refine segment (up to its readout) when the
+                # draft stopped moving over the identity phase - x is the plunge readout here
+                mv = trj.motion(x, x0_anchor)["mf"] if x0_anchor is not None else None
+                st["refine_motion"] = mv
+                if mv is not None and mv < refine_thr:
+                    skip_until = next((k for k in range(i + 1, n) if float(sigmas[k + 1]) <= 1e-6), n - 1)
+                    st["refine_skipped"] += 1
+                    continue
+            # the state before a re-noise is the draft x0 (a segment of a phase split starts here
+            # without a previous model call - its motion reference is the draft it was handed)
+            mprev = x
             if restart_hook is not None:
                 base_model = getattr(getattr(model, "inner_model", None), "inner_model", None)
                 x = restart_hook(x, base_model)
             eps = torch.randn(x.shape, generator=gen, device="cpu").to(x)
             x = (1.0 - s_next) * x + s_next * eps
-            old_d = None
+            st["jumps"] += 1
+            drop_history("restart")
             prev_denoised = None
             prev_sigma_model = None
+            prev2_denoised = prev2_sigma_model = None
             continue
 
         if s_cur <= 1e-6:
@@ -278,9 +525,14 @@ def kreaphoton_sampler_loop(model, x, sigmas, extra_args=None, callback=None, di
         if not variety_done and s_cur <= variety_end + 1e-9:
             if variety_a_latent > 0.0:
                 x = variety_perturb(x, s_cur, prev_denoised, int(variety_seed), float(variety_a_latent))
-                old_d = None          # AB2 memory is not meaningful across a re-composition
+                drop_history("variety")   # multistep memory is not meaningful across a re-composition
                 prev_denoised = None
                 prev_sigma_model = None
+                prev2_denoised = prev2_sigma_model = None
+            elif solver == "rf_2m":
+                # conditioning-only switch: the x0 predictions change field here too. euler_2m
+                # keeps its v1 behaviour (history kept) - the default path stays bit-exact
+                drop_history("variety")
             model_options[VARIETY_FLAG] = True
             variety_done = True
 
@@ -293,9 +545,10 @@ def kreaphoton_sampler_loop(model, x, sigmas, extra_args=None, callback=None, di
             if s_decl > s_next + 1e-6:
                 x = x * ((1.0 - s_decl) / (1.0 - s_cur))
                 s_cur = s_decl
-                old_d = None
+                drop_history("coherence")
                 prev_denoised = None
                 prev_sigma_model = None
+                prev2_denoised = prev2_sigma_model = None
             jump_done = True
 
         # --- detail boost: step-relative sigma nudge (M2), skip on plunge/final ---
@@ -305,64 +558,114 @@ def kreaphoton_sampler_loop(model, x, sigmas, extra_args=None, callback=None, di
         if is_final or is_plunge:
             a = 0.0
         else:
-            a = detail_amount * _detail_envelope(p, detail_start, detail_end, detail_peak)
+            if detail_space == "sigma":
+                a = detail_amount * _detail_envelope_sigma(s_cur, d_hi, d_peak, d_lo)
+            else:
+                a = detail_amount * _detail_envelope(p, detail_start, detail_end, detail_peak)
             a = max(-1.0, min(1.0, a))
         sigma_model = max(1e-4, s_cur - a * (s_cur - s_next))
 
-        if tiler is not None:
-            denoised = tiler(model, x, sigma_model, extra_args)
-        else:
-            denoised = model(x, sigma_model * s_in, **extra_args)
-        if x0_hook is not None:
-            denoised = x0_hook(denoised, sigma_model)
-        if ref_hook is not None:
-            base_model = getattr(getattr(model, "inner_model", None), "inner_model", None)
-            denoised = ref_hook(x, denoised, s_cur, base_model)
+        denoised = call(x, sigma_model, s_cur)
+        st["model_calls"] += 1
         if callback is not None:
             callback({"x": x, "i": i, "sigma": sigmas[i],
                       "sigma_hat": sigmas[i], "denoised": denoised})
+
+        # --- trajectory metrics (P3.1) and the adaptive decisions they drive ---
+        if trace:
+            rec = {"sigma": s_cur}
+            if mprev is not None:
+                rec.update(trj.motion(denoised, mprev))
+            st["traj"].append(rec)
+        do_pc = False
+        if pc != "off" and not is_final and (p_off + i) in pc_set:
+            if pc == "selective":
+                do_pc = True
+            else:
+                mv = trj.motion(denoised, mprev)["all"] if mprev is not None else None
+                st["pc_motion"].append(mv)
+                do_pc = mv is not None and mv > pc_thr
+        if x0_anchor is None and refine_mode == "auto" and s_cur <= composition_end + 1e-9:
+            x0_anchor = denoised
+        mprev = denoised
 
         if is_final:
             x = denoised
             if (x0_extrapolation > 0.0 and not is_plunge and prev_denoised is not None
                     and prev_sigma_model is not None and prev_sigma_model - sigma_model > 1e-6):
                 # terminal x0-trajectory extrapolation: the model's x0 estimate
-                # sharpens as sigma -> 0; continue that trend linearly past the
-                # last evaluation point instead of stopping at it.
-                factor = min(X0_EXTRAP_MAX_FACTOR, sigma_model / (prev_sigma_model - sigma_model))
-                x = denoised + float(x0_extrapolation) * factor * (denoised - prev_denoised)
-            old_d = None
+                # sharpens as sigma -> 0; continue that trend past the last evaluation
+                # point instead of stopping at it.
+                if int(x0_extrap_order) == 1 and x0_trust <= 0.0:
+                    factor = min(X0_EXTRAP_MAX_FACTOR, sigma_model / (prev_sigma_model - sigma_model))
+                    x = denoised + float(x0_extrapolation) * factor * (denoised - prev_denoised)
+                else:   # v2: quadratic through three calls and / or the local trust region
+                    hist = ([(prev2_denoised, prev2_sigma_model)] if prev2_denoised is not None else [])
+                    hist += [(prev_denoised, prev_sigma_model), (denoised, sigma_model)]
+                    delta = trj.x0_zero_delta(hist, x0_extrapolation, int(x0_extrap_order), X0_EXTRAP_MAX_FACTOR)
+                    if delta is not None:
+                        x = denoised + trj.trust_clamp(delta, denoised - prev_denoised, x0_trust)
+            st["final"] += 1
+            drop_history("final")
             prev_denoised = None
             prev_sigma_model = None
+            prev2_denoised = prev2_sigma_model = None
             continue
 
-        eta = _gated_eta(s_next, eta0, sigma_gate)
+        e0 = eta_tail if (tail_from is not None and i >= tail_from) else eta0
+        eta = _gated_eta(s_next, e0, sigma_gate)
         if eta > 0.0:
             # CONST/rectified-flow ancestral step, ported from comfy's own
             # sample_euler_ancestral_RF (k_diffusion/sampling.py) so our
             # detail-nudged sigma_model integrates with the SAME math CONST
-            # models expect. old_d reset - AB2 memory is not meaningful across
-            # a stochastic jump.
+            # models expect. History reset - multistep memory is not meaningful
+            # across a stochastic jump.
             downstep_ratio = 1.0 + (s_next / s_cur - 1.0) * eta
             sigma_down = s_next * downstep_ratio
             alpha_next = 1.0 - s_next
             alpha_down = 1.0 - sigma_down
             renoise_coeff = max(0.0, s_next ** 2 - sigma_down ** 2 * alpha_next ** 2 / alpha_down ** 2) ** 0.5
             ratio = sigma_down / s_cur
-            x = ratio * x + (1.0 - ratio) * denoised
+            if do_pc and sigma_down > 1e-6:
+                # Heun on the deterministic down-step, then the same re-noise
+                x_pred = ratio * x + (1.0 - ratio) * denoised
+                d1 = (x - denoised) / s_cur
+                d2 = (x_pred - call(x_pred, sigma_down, sigma_down)) / sigma_down
+                x = x + 0.5 * (d1 + d2) * (sigma_down - s_cur)
+                st["pc"] += 1
+            else:
+                x = ratio * x + (1.0 - ratio) * denoised
             eps = torch.randn(x.shape, generator=gen, device="cpu").to(x)
             x = (alpha_next / alpha_down) * x + eps * renoise_coeff
-            old_d = None
+            st["ancestral"] += 1
+            drop_history("ancestral")
         else:
             d = (x - denoised) / s_cur
             dt = s_next - s_cur
-            if order >= 2 and old_d is not None and abs(dt) <= PLUNGE_DSIGMA:
-                d_use = 1.5 * d - 0.5 * old_d   # Adams-Bashforth 2
+            if do_pc:
+                # Heun: Euler predictor to s_next, one corrector call there, averaged slope
+                x_pred = x + d * dt
+                d_use = 0.5 * (d + (x_pred - call(x_pred, s_next, s_next)) / s_next)
+                st["heun"] += 1
+                st["pc"] += 1
+            elif solver == "euler_2m" and old_d is not None and abs(dt) <= PLUNGE_DSIGMA:
+                d_use = 1.5 * d - 0.5 * old_d   # Adams-Bashforth 2, equal-step coefficients (legacy)
+                st["ab2"] += 1
+            elif (solver == "rf_2m" and old_x0 is not None and abs(dt) <= PLUNGE_DSIGMA
+                    and _rf_lambda(s_cur) - _rf_lambda(old_s) > max(
+                        1e-6, RF2M_MIN_STEP_RATIO * (_rf_lambda(s_next) - _rf_lambda(s_cur)))):
+                # DPM-Solver++(2M): the Euler transport with the lambda-extrapolated x0
+                d_use = (x - _rf2m_x0(denoised, old_x0, old_s, s_cur, s_next)) / s_cur
+                st["rf2m"] += 1
             else:
                 d_use = d
+                st["euler"] += 1
             x = x + d_use * dt
             old_d = d
+            # lambda(1) = -inf: a step starting at sigma=1 leaves no usable x0 history
+            old_x0, old_s = (denoised, s_cur) if s_cur < 1.0 - 1e-6 else (None, None)
 
+        prev2_denoised, prev2_sigma_model = prev_denoised, prev_sigma_model
         prev_denoised = denoised
         prev_sigma_model = sigma_model
 
@@ -400,7 +703,10 @@ def _run_one(model, positive, negative, latent_dict, sigmas, *, seed,
              variety_end=0.96, variety_seed=0, variety_state="off",
              progress_offset=0, progress_total=0, guidance_rescale=0.0,
              pag_scale=0.0, pag_lo=0.72, pag_hi=0.93, pag_blocks="8-15", restart_hook=None,
-             coherence_jump=0.0, coherence_jump_sigma=0.93, tiler=None, x0_hook=None, ref_hook=None):
+             coherence_jump=0.0, coherence_jump_sigma=0.93, tiler=None, x0_hook=None, ref_hook=None,
+             solver=None, eta_tail=None, tail_start=None, guidance_sigma="model",
+             detail_space="step", detail_sigma=None, x0_extrap_order=1, x0_trust=0.0,
+             pc="off", pc_steps=None, composition_end=0.85, refine_mode="on", trace=False):
     latent = comfy.sample.fix_empty_latent_channels(model, latent_dict["samples"])
     if latent.ndim != 5 or latent.shape[1] != 16:
         raise ValueError(
@@ -418,6 +724,7 @@ def _run_one(model, positive, negative, latent_dict, sigmas, *, seed,
     noise = contract_noise(noise, strength=contraction, per_channel=per_channel_contraction,
                             manifold_std=manifold_std, manifold_mean=manifold_mean)
 
+    stats = {}
     sampler = comfy.samplers.KSAMPLER(kreaphoton_sampler_loop, extra_options={
         "detail_amount": float(detail_amount), "detail_start": float(detail_start),
         "detail_end": float(detail_end), "detail_peak": float(detail_peak),
@@ -430,13 +737,17 @@ def _run_one(model, positive, negative, latent_dict, sigmas, *, seed,
         "restart_hook": restart_hook,
         "coherence_jump": float(coherence_jump), "coherence_jump_sigma": float(coherence_jump_sigma),
         "tiler": tiler, "x0_hook": x0_hook, "ref_hook": ref_hook,
+        "solver": solver, "eta_tail": eta_tail, "stats": stats, "tail_start": tail_start,
+        "detail_space": detail_space, "detail_sigma": detail_sigma, "x0_extrap_order": int(x0_extrap_order),
+        "x0_trust": float(x0_trust), "pc": pc, "pc_steps": pc_steps, "composition_end": float(composition_end),
+        "refine_mode": refine_mode, "trace": bool(trace),
     })
 
     # One guider for every path: "off" is cond_scale 1.0 (stock cfg1 optimization,
-    # no uncond NFE), "flat" constant cfg (RAW), "window" the M6 window.
+    # no uncond NFE), "flat" constant cfg (RAW), "window" the M6 ramp, "band" the v2 band.
     guider = KreaPhotonGuider(model, mode=guidance_mode, cfg=flat_cfg, delta=delta, lo=lo, hi=hi,
                               rescale=guidance_rescale, pag_scale=pag_scale, pag_lo=pag_lo,
-                              pag_hi=pag_hi, pag_blocks=pag_blocks)
+                              pag_hi=pag_hi, pag_blocks=pag_blocks, guidance_sigma=guidance_sigma)
     guider.set_conds(positive, negative, positive_variety=positive_variety)
 
     try:
@@ -449,6 +760,9 @@ def _run_one(model, positive, negative, latent_dict, sigmas, *, seed,
     samples = guider.sample(noise, latent, sampler, sigmas,
                             denoise_mask=latent_dict.get("noise_mask"),
                             callback=callback, disable_pbar=disable_pbar, seed=seed)
+    print("[KreaPhoton] " + format_stats(stats, guider))
+    if trace:
+        print("[KreaPhoton] " + format_trace(stats))
     samples = samples.to(device=comfy.model_management.intermediate_device(),
                          dtype=comfy.model_management.intermediate_dtype())
     out = latent_dict.copy()
@@ -540,8 +854,20 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *, seed,
                  guidance_rescale=0.0, pag_scale=0.0, pag_lo=0.72, pag_hi=0.93, pag_blocks="8-15",
                  restart_hook=None, texture_model=None, texture_start=0.65,
                  coherence_jump=0.0, coherence_jump_sigma=0.93, tiler=None, x0_hook=None,
-                 ref_hook=None, progress_total=0):
+                 ref_hook=None, progress_total=0, solver=None, eta_tail=None,
+                 guidance_sigma="model", detail_space="step", detail_sigma=None,
+                 x0_extrap_order=1, x0_trust=0.0, pc="off", refine_mode="on", trace=None):
     """Shared entry point for all KreaPhoton sampler nodes.
+
+    Sampler v2 iteration 2 (opt-in, defaults = v1): guidance_sigma (guider), detail_space /
+    detail_sigma, x0_extrap_order / x0_trust, pc (strategic steps computed on the FULL
+    schedule and handed to every segment), refine_mode, trace (None = the
+    KREAPHOTON_TRACE environment variable) - see kreaphoton_sampler_loop.
+
+    solver / eta_tail (Sampler v2, opt-in): forwarded to every segment's loop - see
+    kreaphoton_sampler_loop - together with the tail start of the FULL schedule, so a
+    phase cut inside the restart tail keeps it. None = the v1 behaviour (solver from
+    `order`, eta0 everywhere).
 
     progress_total (Composition Drafts, 2026-09-22): the step count of the FULL
     schedule this call is a prefix of, so a truncated head integrates the same
@@ -579,7 +905,14 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *, seed,
               x0_extrapolation=x0_extrapolation, guidance_rescale=guidance_rescale,
               pag_scale=pag_scale, pag_lo=pag_lo, pag_hi=pag_hi, pag_blocks=pag_blocks,
               restart_hook=restart_hook, coherence_jump_sigma=coherence_jump_sigma,
-              tiler=tiler, x0_hook=x0_hook, ref_hook=ref_hook)
+              tiler=tiler, x0_hook=x0_hook, ref_hook=ref_hook, solver=solver, eta_tail=eta_tail,
+              tail_start=tail_start_index(sig_list) if eta_tail is not None else None,
+              guidance_sigma=guidance_sigma, detail_space=detail_space,
+              detail_sigma=DETAIL_SIGMA if detail_sigma is None else tuple(detail_sigma),
+              x0_extrap_order=int(x0_extrap_order), x0_trust=float(x0_trust), pc=pc,
+              pc_steps=pc_step_indices(sig_list, composition_end) if pc != "off" else None,
+              composition_end=composition_end, refine_mode=refine_mode,
+              trace=(os.environ.get("KREAPHOTON_TRACE", "") == "1") if trace is None else bool(trace))
     # the jump belongs to the first segment only (the step at/below its sigma
     # lives in the composition/identity head of the schedule); later segments
     # must not re-apply it

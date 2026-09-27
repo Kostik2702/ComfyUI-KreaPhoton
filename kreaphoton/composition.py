@@ -53,7 +53,7 @@ from .lora_phase import build_phase_models
 from .presets import (COHERENCE, COHERENCE_OPTIONS, DEFAULT_PRESET, GUIDANCE, MANIFOLD_MEAN, MANIFOLD_STD,
                       PRESETS, VARIETY_COND_TAPS, VARIETY_END, VARIETY_LEVELS, preset_guidance)
 from .sampling import run_sampling
-from .schedules import build_schedule
+from .schedules import PLUNGE_SIGMA_FLOOR, build_schedule
 
 COMPOSITION_END = 0.85          # the sampler's composition_end (presets.LORA_PHASES "composition")
 MAX_DRAFTS = 16
@@ -293,7 +293,8 @@ class KreaPhotonCompositionDrafts:
         clean = _explicit_phase_model(clean_model, plan_clean, "composition")
         head_model = clean if clean is not None else identity
         full = build_schedule(p["n_steps"], alpha=alpha, restart_frac=p["restart_frac"], sigma_r=p["sigma_r"],
-                              plunge=p["plunge"])
+                              plunge=p["plunge"], plunge_sigma=p.get("plunge_sigma", PLUNGE_SIGMA_FLOOR),
+                              soft_plunge=p.get("soft_plunge", 0))
         head, n_calls, readout = composition_head(full, COMPOSITION_END, int(draft_calls))
         guidance_mode, flat_cfg = preset_guidance(p, negative is not None)
 
@@ -307,6 +308,7 @@ class KreaPhotonCompositionDrafts:
                 contraction=p["contraction"], per_channel_contraction=False,
                 manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
                 detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
+                solver=p["sampler"], eta_tail=p.get("eta_tail"),
                 eta0=p["eta0"], sigma_gate=p["sigma_gate"], x0_extrapolation=0.0,
                 variety_a_latent=a_latent, variety_a_cond=a_cond, variety_seed=s_i,
                 variety_end=VARIETY_END, variety_cond_taps=VARIETY_COND_TAPS,

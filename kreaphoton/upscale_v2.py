@@ -173,7 +173,7 @@ class KreaPhotonUpscaleV2:
                 add_noise=add_noise,
                 contraction=p["contraction"], per_channel_contraction=False,
                 manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
-                detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
+                detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]], solver=p["sampler"],
                 eta0=float(extra.get("eta0", 0.0)), sigma_gate=0.10,
                 texture_model=texture_model, texture_start=UPSCALE_TEXTURE_START,
                 tiler=tiler, x0_hook=anchor,

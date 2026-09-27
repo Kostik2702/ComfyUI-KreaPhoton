@@ -2,7 +2,7 @@
 KreaPhoton guider (M6 sigma-adaptive guidance window + variety cond switch).
 The ONLY sanctioned way to implement phase-windowed guidance for KreaPhoton
 (planning-council B4/D10-D14/H29), and since v1.3 the single guider every
-KreaPhoton sampler path uses ("off" / "flat" / "window" are three cond_scale
+KreaPhoton sampler path uses ("off" / "flat" / "window" / "band" are cond_scale
 policies of one class - no more stock-CFGGuider special case).
 
 Ground truth (E:\\CUI portable\\ComfyUI-torch2.9-cu130-cp313-v1.2\\ComfyUI):
@@ -31,12 +31,17 @@ decision (it is the same step at which the latent axis fires), the guider only
 reads it - no second guider.sample() lifecycle, no latent round-trip, and the
 validated gated-eta stays on (audit F02/F03).
 """
+import math
+
 import comfy.samplers
 import torch
 
 VARIETY_FLAG = "kreaphoton_variety_active"       # model_options key written by the loop
 VARIETY_COND_KEY = "positive_variety"            # conds key holding the rotated positive
-GUIDANCE_MODES = ("off", "flat", "window")
+TRUE_SIGMA_KEY = "kreaphoton_true_sigma"         # model_options key: the TRAJECTORY sigma of the
+                                                 # state the loop is evaluating (Sampler v2 P1.4)
+GUIDANCE_MODES = ("off", "flat", "window", "band")
+GUIDANCE_SIGMA_SOURCES = ("model", "true")       # which sigma the guidance policy reads
 
 
 def smoothstep01(u: float) -> float:
@@ -45,12 +50,17 @@ def smoothstep01(u: float) -> float:
 
 
 def g_window(sigma: float, delta: float, lo: float = 0.7, hi: float = 0.9) -> float:
-    """g(sigma) = 1 + delta * smoothstep((sigma-lo)/(hi-lo)).
+    """g(sigma) = 1 + delta * smoothstep((sigma-lo)/(hi-lo)) - a high-sigma RAMP, not a
+    finite band: exactly 1.0 at/below lo, a smooth rise across [lo, hi], and the full
+    1 + delta at/above hi, i.e. over the whole composition head of the trajectory.
+    That is the M6 design (research/models/m6_guidance_window.py: the exposure
+    integral W = 0.5*(hi-lo) + (1-hi) includes the 0.9..1.0 zone at full strength)
+    and the policy V1 calibrated delta=1.25 on; tests/test_guidance.py [1] pins it.
+    The finite band is g_band ("band" mode, Sampler v2 A/B candidate).
 
-    MUST return exactly 1.0 outside [lo, hi] (smoothstep01 clamps its argument to
-    [0,1] before the cubic, so u<=0 -> smoothstep=0 -> g=1.0 exactly; no epsilon
-    residue, unlike a sigmoid-form window would leave). This is what lets the
-    stock cfg1-optimization (samplers.py:609) fire for free outside the window.
+    Exactly 1.0 below lo (smoothstep01 clamps its argument before the cubic, no
+    epsilon residue, unlike a sigmoid form) is what lets the stock cfg1-optimization
+    (samplers.py:609) skip the uncond forward below the ramp.
 
     Degenerate windows (audit F07): hi < lo is swapped, hi == lo becomes a hard
     step at lo (1+delta at/above, exactly 1.0 below) instead of a division by 0.
@@ -60,6 +70,23 @@ def g_window(sigma: float, delta: float, lo: float = 0.7, hi: float = 0.9) -> fl
     if hi - lo <= 1e-9:
         return 1.0 + delta if sigma >= lo else 1.0
     return 1.0 + delta * smoothstep01((sigma - lo) / (hi - lo))
+
+
+def g_band(sigma: float, delta: float, lo: float = 0.7, hi: float = 0.9) -> float:
+    """g(sigma) = 1 + delta * sin^2(pi * (sigma-lo)/(hi-lo)) strictly inside (lo, hi),
+    exactly 1.0 at/outside the bounds (Sampler v2 proposal P0-A, opt-in "band" mode).
+
+    Guidance as a temporary correction of the identity transition only: the
+    composition head (sigma >= hi) runs unguided on the cfg1 path - no uncond
+    forward - and so does everything below lo. Peak 1 + delta at the band centre;
+    the continuous exposure is delta*(hi-lo)/2 vs the ramp's delta*((hi-lo)/2 +
+    (1-hi)) - half of it at the default 0.7/0.9. hi < lo is swapped; a zero-width
+    band has no interior (1.0)."""
+    if hi < lo:
+        lo, hi = hi, lo
+    if hi - lo <= 1e-9 or sigma <= lo or sigma >= hi:
+        return 1.0
+    return 1.0 + delta * math.sin(math.pi * (sigma - lo) / (hi - lo)) ** 2
 
 
 PAG_STASH_KEY = "_kreaphoton_pag_v"
@@ -136,16 +163,31 @@ class KreaPhotonGuider(comfy.samplers.CFGGuider):
 
     mode: "off"    -> cond_scale 1.0 every step (stock cfg1 optimization, 0 uncond NFE)
           "flat"   -> cond_scale = cfg every step (full-trajectory CFG, 2x NFE; RAW)
-          "window" -> cond_scale = g_window(sigma) (M6, uncond only inside [lo, hi])
+          "window" -> cond_scale = g_window(sigma) (M6 ramp: uncond on every step with
+                      sigma > lo, full strength at/above hi)
+          "band"   -> cond_scale = g_band(sigma) (Sampler v2, opt-in: uncond only
+                      strictly inside (lo, hi))
+
+    n_calls / n_guided: per-guider counters of predict_noise calls and of those that
+    ran with cond_scale != 1 (the ones that pay an uncond forward) - diagnostics only.
+
+    guidance_sigma (Sampler v2 P1.4): "model" (v1) - the policy (cond_scale, PAG gate)
+    reads the timestep, i.e. the detail-NUDGED sigma the model is queried at, so changing
+    detail_a also moves the guidance; "true" - it reads the trajectory sigma the loop
+    publishes under TRUE_SIGMA_KEY (the model itself still gets the nudged sigma).
     """
 
     def __init__(self, model_patcher, mode: str = "off", cfg: float = 1.0,
                  delta: float = 1.25, lo: float = 0.7, hi: float = 0.9,
                  rescale: float = 0.0, pag_scale: float = 0.0, pag_lo: float = 0.72,
-                 pag_hi: float = 0.93, pag_blocks="8-15"):
+                 pag_hi: float = 0.93, pag_blocks="8-15", guidance_sigma: str = "model"):
         super().__init__(model_patcher)
         if mode not in GUIDANCE_MODES:
             raise ValueError(f"KreaPhoton: guidance_mode must be one of {GUIDANCE_MODES}, got {mode!r}")
+        if guidance_sigma not in GUIDANCE_SIGMA_SOURCES:
+            raise ValueError(f"KreaPhoton: guidance_sigma must be one of {GUIDANCE_SIGMA_SOURCES}, "
+                             f"got {guidance_sigma!r}")
+        self.guidance_sigma = guidance_sigma
         self.mode = mode
         self.set_cfg(float(cfg))
         self.delta = float(delta)
@@ -156,6 +198,8 @@ class KreaPhotonGuider(comfy.samplers.CFGGuider):
         self.pag_lo = float(min(pag_lo, pag_hi))
         self.pag_hi = float(max(pag_lo, pag_hi))
         self.pag_blocks = parse_blocks(pag_blocks)
+        self.n_calls = 0
+        self.n_guided = 0
 
     # ------------------------------------------------------------------
     # Perturbed-attention guidance (v1.4, experimental)
@@ -204,6 +248,8 @@ class KreaPhotonGuider(comfy.samplers.CFGGuider):
     def cond_scale_at(self, sigma: float) -> float:
         if self.mode == "window":
             return g_window(sigma, self.delta, self.lo, self.hi)
+        if self.mode == "band":
+            return g_band(sigma, self.delta, self.lo, self.hi)
         if self.mode == "flat":
             return float(self.cfg)
         return 1.0
@@ -212,7 +258,12 @@ class KreaPhotonGuider(comfy.samplers.CFGGuider):
         if model_options is None:
             model_options = {}
         sigma = float(timestep.flatten()[0].item()) if torch.is_tensor(timestep) else float(timestep)
+        if getattr(self, "guidance_sigma", "model") == "true":
+            sigma = float(model_options.get(TRUE_SIGMA_KEY, sigma))
         cond_scale = self.cond_scale_at(sigma)
+        self.n_calls = getattr(self, "n_calls", 0) + 1
+        if not math.isclose(cond_scale, 1.0):   # the stock cfg1 test (samplers.py:609)
+            self.n_guided = getattr(self, "n_guided", 0) + 1
         positive = self.conds.get("positive", None)
         if model_options.get(VARIETY_FLAG, False) and VARIETY_COND_KEY in self.conds:
             positive = self.conds[VARIETY_COND_KEY]

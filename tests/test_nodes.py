@@ -96,6 +96,29 @@ def main():
     assert ed(1.25, "window", low_a) > ed(1.25, "window", med_a) > ed(1.25, "window", hi_a) > 0.0
     print("     window+variety: high -> %.3f, medium -> %.3f, low -> %.3f; off/flat untouched"
           % (ed(1.25, "window", hi_a), ed(1.25, "window", med_a), ed(1.25, "window", low_a)))
+    assert ed(1.25, "band", hi_a) == ed(1.25, "window", hi_a), "band spends the same hallucination budget"
+
+    # --- (2c) Sampler v2: every preset names a known sampler; quality-v2 = quality + the
+    #          numerical-engine change ONLY (rf_2m + deterministic tail), guidance untouched ---
+    print("[2c] preset samplers + turbo/quality-v2 delta")
+    for name, p in presets.PRESETS.items():
+        assert p["sampler"] in nodes._ORDER_FROM_SAMPLER_NAME, (name, p["sampler"])
+    q, q2 = presets.PRESETS["turbo/quality"], presets.PRESETS["turbo/quality-v2"]
+    assert {k for k in set(q) | set(q2) if q.get(k) != q2.get(k)} == {"sampler", "eta_tail", "experimental"}
+    assert (q2["sampler"], q2["eta_tail"], q2["experimental"]) == ("rf_2m", 0.0, True)
+    assert all("eta_tail" not in p for n, p in presets.PRESETS.items() if n not in ("turbo/quality-v2",
+                                                                                   "turbo/quality-plus"))
+    qp = presets.PRESETS["turbo/quality-plus"]
+    assert {k for k in set(q2) | set(qp) if q2.get(k) != qp.get(k)} == {"pc", "refine"}
+    assert (qp["pc"], qp["refine"]) == ("selective", "auto")
+    for bad in ({"pc": "always"}, {"refine": "on"}, {"eta_tail": -0.5}):
+        try:
+            presets.validate_presets({"broken": dict(q2, **bad)})
+            raise AssertionError("invalid optional key must be rejected: %s" % bad)
+        except ValueError as e:
+            assert list(bad)[0] in str(e), e
+    print("     all samplers known; quality-v2 = quality + sampler/eta_tail; quality-plus = v2 + pc/refine; "
+          "bad optional keys rejected")
 
     # --- (3) simple Sampler hands the policy to run_sampling (the F01 bug site) ---
     print("[3] KreaPhotonSampler.sample -> run_sampling kwargs per preset")
@@ -161,6 +184,27 @@ def main():
         assert captured["x0_extrapolation"] == 0.0 and captured["variety_seed"] == 7, \
             "omitted optional inputs must keep v1.2 semantics (variety_seed=seed, no extrapolation)"
         print("     Advanced: x0_extrapolation / variety_seed threaded, defaults keep v1.2 semantics")
+
+        # Sampler v2 (iteration 1): solver + eta_tail threading, opt-in only
+        assert captured["solver"] == "euler" and captured["eta_tail"] is None, "eta_tail -1 (default) = off"
+        adv.sample("MODEL", pos, latent, sig, 7, "rf_2m", 0.0, 0.15, 0.95, 0.6, 1.0, 0.1, 1.0, False,
+                   "band", 1.15, 1.25, 0.7, 0.9, 0.0, 0.0, 0.96, preview_method="none", eta_tail=0.0)
+        assert captured["solver"] == "rf_2m" and captured["order"] == 2 and captured["eta_tail"] == 0.0
+        assert captured["guidance_mode"] == "band"
+        adv.sample("MODEL", pos, latent, sig, 7, "euler", 0.0, 0.15, 0.95, 0.6, 1.0, 0.1, 1.0, False,
+                   "window", 1.15, 1.25, 0.7, 0.9, 0.0, 0.0, 0.96, preview_method="none", guidance_sigma="true",
+                   detail_space="sigma", detail_sigma_hi=0.8, detail_sigma_peak=0.4, detail_sigma_lo=0.1,
+                   x0_extrap_order=2, x0_trust=1.5, pc="auto", refine_mode="auto")
+        assert (captured["guidance_sigma"], captured["detail_space"], captured["detail_sigma"], captured["x0_extrap_order"],
+                captured["x0_trust"], captured["pc"], captured["refine_mode"]) == \
+            ("true", "sigma", (0.8, 0.4, 0.1), 2, 1.5, "auto", "auto"), captured
+        for name in presets.PRESETS:
+            node.sample("MODEL", pos, latent, 1001, name, "off", preview_method="none")
+            p = presets.PRESETS[name]
+            assert captured["solver"] == p["sampler"] and captured["eta_tail"] == p.get("eta_tail"), name
+        node.sample("MODEL", pos, latent, 1001, "turbo/quality-v2", "off", preview_method="none", denoise=0.4)
+        assert captured["eta0"] == 0.0 and captured["eta_tail"] is None, "refine path: no stochastic tail either"
+        print("     solver / eta_tail threaded (Advanced -1 = off, rf_2m, band); every preset's own values")
     finally:
         nodes.run_sampling = real_run_sampling
 
@@ -297,12 +341,28 @@ def main():
     a_it = nodes.KreaPhotonSamplerAdvanced.INPUT_TYPES()
     tail = list(a_it["optional"].keys())[len(V12_ADVANCED_OPTIONAL):]
     assert tail == ["x0_extrapolation", "guidance_rescale", "pag_scale", "pag_lo", "pag_hi", "pag_blocks",
-                    "restart_enhance", "texture_model", "texture_start", "coherence_jump", "coherence_jump_sigma"], tail
+                    "restart_enhance", "texture_model", "texture_start", "coherence_jump", "coherence_jump_sigma",
+                    "eta_tail", "guidance_sigma", "detail_space", "detail_sigma_hi", "detail_sigma_peak",
+                    "detail_sigma_lo", "x0_extrap_order", "x0_trust", "pc", "refine_mode"], tail
+    assert a_it["optional"]["eta_tail"][1]["default"] == -1.0
+    opt = a_it["optional"]
+    assert (opt["guidance_sigma"][0], opt["detail_space"][0], opt["pc"][0], opt["refine_mode"][0]) == \
+        (["model", "true"], ["step", "sigma"], ["off", "selective", "auto"], ["on", "auto"])
+    assert (opt["guidance_sigma"][1]["default"], opt["detail_space"][1]["default"], opt["pc"][1]["default"],
+            opt["refine_mode"][1]["default"], opt["x0_extrap_order"][1]["default"], opt["x0_trust"][1]["default"]) == \
+        ("model", "step", "off", "on", 1, 0.0), "every v2 input defaults to the v1 behaviour"
+    assert tuple(opt[k][1]["default"] for k in ("detail_sigma_hi", "detail_sigma_peak", "detail_sigma_lo")) == \
+        presets.DETAIL_SIGMA
+    sch_opt = list(nodes.KreaPhotonScheduler.INPUT_TYPES()["optional"].keys())
+    assert sch_opt == ["latent", "refine_steps", "refine_sigma", "plunge_sigma", "soft_plunge"], sch_opt
+    # combo values are appended too: a saved workflow stores the value, the old ones must stay valid
+    assert a_it["required"]["guidance_mode"][0] == ["off", "flat", "window", "band"]
+    assert a_it["required"]["sampler_order"][0] == ["euler", "euler_2m", "rf_2m"]
     s_it = nodes.KreaPhotonSampler.INPUT_TYPES()
     assert list(s_it["optional"].keys())[len(V12_SAMPLER_OPTIONAL):] == ["restart_enhance", "texture_model", "coherence"]
     assert s_it["optional"]["restart_enhance"][0][0] == "off"
     assert s_it["optional"]["coherence"][0] == presets.COHERENCE_OPTIONS and s_it["optional"]["coherence"][1]["default"] == "off"
-    print("[8] new optional inputs appended after the v1.2 ones (simple: +3; Advanced: +11)")
+    print("[8] new optional inputs appended after the v1.2 ones (simple: +3; Advanced: +21; Scheduler: +2)")
 
     # --- (10) coherence combo on the simple node -> schedule / kwargs ---
     print("[10] simple node coherence combo")
@@ -336,9 +396,32 @@ def main():
         assert len(jumps_of(sig)) == 2 and sch.count_model_calls(sig) == 16
         sig2 = nodes.KreaPhotonScheduler().build(12, sch.ALPHA, 0.25, 0.65, False, refine_steps=4)[0]
         assert len(jumps_of(sig2)) == 1, "no plunge -> no self-refine pass"
+
+        # Sampler v2 iteration 2: turbo/quality-plus = quality-v2 + selective PC + self-refine 'auto'.
+        # The preset's auto refine builds the refine pass and lets the loop skip it; an explicit
+        # coherence self_refine request forces it on; img2img gets neither PC nor refine
+        node.sample("MODEL", pos, latent, 1, "turbo/quality-plus", "off", preview_method="none")
+        assert captured["pc"] == "selective" and captured["refine_mode"] == "auto", captured
+        assert len(jumps_of(captured["sigmas"])) == 2 and captured["solver"] == "rf_2m" and captured["eta_tail"] == 0.0
+        node.sample("MODEL", pos, latent, 1, "turbo/quality-plus", "off", preview_method="none", coherence="self_refine")
+        assert captured["refine_mode"] == "on" and len(jumps_of(captured["sigmas"])) == 2
+        node.sample("MODEL", pos, latent, 1, "turbo/quality-plus", "off", preview_method="none", denoise=0.4)
+        assert captured["pc"] == "off" and captured["refine_mode"] == "on" and len(jumps_of(captured["sigmas"])) == 0
+        node.sample("MODEL", pos, latent, 1, "turbo/quality", "off", preview_method="none")
+        assert (captured["pc"], captured["refine_mode"], captured["detail_space"], captured["guidance_sigma"],
+                captured["x0_extrap_order"], captured["x0_trust"]) == ("off", "on", "step", "model", 1, 0.0)
+        assert len(jumps_of(captured["sigmas"])) == 1
+        # Scheduler: plunge floor + soft plunge (P2.2 / P2.3)
+        sp = nodes.KreaPhotonScheduler().build(12, sch.ALPHA, 0.25, 0.65, True, plunge_sigma=0.75, soft_plunge=1)[0]
+        assert sch.count_model_calls(sp) == 12 and [round(v, 4) for v in sp.tolist()[7:10]] == [0.75, 0.375, 0.0]
+        assert nodes.KreaPhotonScheduler.INPUT_TYPES()["optional"]["soft_plunge"][1]["max"] == sch.SOFT_PLUNGE_MAX
+        sp68 = nodes.KreaPhotonScheduler().build(12, sch.ALPHA, 0.25, 0.65, True, plunge_sigma=0.68)[0]
+        assert abs(sp68.tolist()[jumps_of(sp68)[0] - 1] - 0.68) < 1e-6
     finally:
         nodes.run_sampling = real_run_sampling
     print("     off / jump / self_refine / both -> jump strength + 1 or 2 ascending jumps; refine path untouched")
+    print("     quality-plus: PC selective + refine auto (explicit self_refine -> on, img2img -> off); "
+          "Scheduler plunge_sigma / soft_plunge")
 
     # --- (9) samplers expand a LoRA plan into phase models (mocked run_sampling) ---
     print("[9] simple node expands the LoRA plan into clean/model/texture")
@@ -542,6 +625,7 @@ def main():
         assert captured.get("variety_a_latent", 0.0) == 0.0 and captured.get("variety_a_cond", 0.0) == 0.0
         assert captured["contraction"] == p["contraction"] and captured["detail_amount"] == p["detail_a"]
         assert captured["order"] == nodes._ORDER_FROM_SAMPLER_NAME[p["sampler"]]
+        assert captured["solver"] == p["sampler"], "the sampler NAME reaches the loop (rf_2m must not run as euler_2m)"
         assert captured["guidance_mode"] == "off" and captured["negative"] is None
         assert captured["seed"] == 1001 and captured["model"] is model and captured["texture_model"] is None
         assert isinstance(captured["tiler"], tl.LatentTiler)
@@ -654,6 +738,7 @@ def main():
         assert isinstance(inv_calls[0]["tiler"], tl.LatentTilerV2) and inv_calls[0]["tiler"] is samp_calls[0]["tiler"]
         assert samp_calls[0]["add_noise"] is False, "after inversion the descent must not add fresh noise"
         assert samp_calls[0]["eta0"] == 0.0 and samp_calls[0]["contraction"] == q["contraction"]
+        assert samp_calls[0]["solver"] == q["sampler"], "the sampler NAME reaches the loop"
         assert torch.equal(samp_calls[0]["latent"], torch.zeros(1, 16, 1, 50, 76) + 1.0), "descent starts from the inverted latent"
         t = samp_calls[0]["tiler"]
         assert t.skip_threshold == q["skip"] and t.fallback is not None and tuple(t.activity.shape) == (50, 76)
