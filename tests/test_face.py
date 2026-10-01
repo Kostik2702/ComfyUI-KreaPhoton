@@ -392,6 +392,37 @@ def test_face_model():
     print("  [8] build_face_model / reference_embedding ... ok")
 
 
+def test_phase_model_parents():
+    """Every patcher build_phase_models / build_face_model hands out is a DIRECT clone of the
+    input model (2026-10-01, 'memory leak with model Krea2'): when a loaded patcher dies, comfy's
+    LoadedModel follows ONE weakref parent level (model_management._switch_parent). A clone of a
+    clone collected by the cyclic GC together with its parent breaks that switch and leaves a dead
+    LoadedModel entry; research/precision/leak_mech.py reproduces it with the real comfy classes."""
+    lp = importlib.import_module("kreaphoton.lora_phase")
+
+    class _ParentModel(_FakeModel):
+        def __init__(self, model_options=None, parent=None):
+            super().__init__(model_options)
+            self.parent = parent
+
+        def clone(self):
+            import copy
+            return _ParentModel(copy.deepcopy(self.model_options), parent=self)
+
+    plan = [{"lora_name": "char", "strength": 1.0, "phase": "identity"},
+            {"lora_name": "layout", "strength": 0.4, "phase": "composition"},
+            {"lora_name": "style", "strength": 0.4, "phase": "texture"}]
+    m = _ParentModel({lp.PLAN_KEY: plan})
+    clean, ident, tex = lp.build_phase_models(m, loader=lambda n: n, apply_lora=lambda p, lora, s: p)
+    for name, p in (("clean", clean), ("identity", ident), ("texture", tex)):
+        assert p is not None and p.parent is m, (name, p and p.parent)
+        assert lp.PLAN_KEY not in p.model_options, name
+    assert lp.PLAN_KEY in m.model_options, "the input model keeps its plan"
+    face, _, _ = lp.build_face_model(m, 1.5, loader=lambda n: n, apply_lora=lambda p, lora, s: p)
+    assert face.parent is m
+    print("  [10] phase / face patchers are direct clones of the input ... ok")
+
+
 def main():
     fg, presets = _load_kreaphoton_package()
     print("test_face:")
@@ -403,6 +434,7 @@ def main():
     test_detect_helpers()
     test_node()
     test_face_model()
+    test_phase_model_parents()
     test_ref_mean()
     print("test_face: ALL PASSED")
 

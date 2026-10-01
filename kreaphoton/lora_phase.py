@@ -83,18 +83,32 @@ def _default_apply(patcher, lora, strength: float):
     return patcher
 
 
+def _plan_free_clone(model):
+    """A clone of `model` without the plan (clone() deep-copies model_options, so the
+    input keeps its plan)."""
+    p = model.clone()
+    p.model_options.pop(PLAN_KEY, None)
+    return p
+
+
 def build_phase_models(model, loader=_default_loader, apply_lora=_default_apply):
     """(clean_model, model, texture_model) for the samplers.
 
     No plan -> (None, model, None): the model is used as is. With a plan the
     base is the model minus the plan; each distinct LoRA set becomes one
     patcher (shared when two segments need the same set, so a plan with only
-    an identity-phase LoRA yields no texture split and no extra re-patch)."""
+    an identity-phase LoRA yields no texture split and no extra re-patch).
+
+    Every patcher is a DIRECT clone of `model`, never a clone of a clone: when a
+    loaded patcher dies, comfy's LoadedModel re-points to its parent through ONE
+    weakref level; a two-level chain of throwaway clones freed by the cyclic GC
+    in one pass leaves the entry dead - 'memory leak with model Krea2', dead
+    entries piling up and a full gc.collect() per model load (2026-10-01,
+    research/precision/leak_mech.py)."""
     plan = list((getattr(model, "model_options", None) or {}).get(PLAN_KEY, []))
     if not plan:
         return None, model, None
-    base = model.clone()
-    base.model_options.pop(PLAN_KEY, None)
+    base = _plan_free_clone(model)
     sets = phase_sets(plan)
     built = {}
 
@@ -102,7 +116,7 @@ def build_phase_models(model, loader=_default_loader, apply_lora=_default_apply)
         key = tuple(indices)
         if key in built:
             return built[key]
-        p = base if not key else base.clone()
+        p = base if not key else _plan_free_clone(model)
         for i in key:
             entry = plan[i]
             p = apply_lora(p, loader(entry["lora_name"]), float(entry["strength"]))
