@@ -57,6 +57,26 @@ def phase_sets(plan):
     return {seg: tuple(v) for seg, v in out.items()}
 
 
+_TRAINER_FLAGS = {"use_rslora_flag": "rsLoRA (alpha/sqrt(rank) scaling)", "use_dora_flag": "DoRA"}
+
+
+def strip_trainer_flags(lora: dict, name: str) -> dict:
+    """blissful-tuner stores two scalar flags in the state dict; ComfyUI maps only weights and
+    warns 'lora key not loaded' for each. Flag 0 = a plain LoRA, scaled exactly as ComfyUI
+    scales it (alpha / rank) -> drop the flags. Flag 1 = a scaling ComfyUI does not implement
+    (no rsLoRA support at all; DoRA only via dora_scale keys) -> refuse, a silent sqrt(rank)
+    weaker character LoRA is the worst failure for likeness (2026-10-01)."""
+    flags = [k for k in lora if k.rsplit(".", 1)[-1] in _TRAINER_FLAGS]
+    if not flags:
+        return lora
+    for k in flags:
+        if float(lora[k]) != 0.0:
+            raise ValueError(f"KreaPhoton LoRA Phase: {name} was trained with "
+                             f"{_TRAINER_FLAGS[k.rsplit('.', 1)[-1]]}, which ComfyUI does not apply - "
+                             f"the LoRA would act with the wrong strength")
+    return {k: v for k, v in lora.items() if k not in flags}
+
+
 def _default_loader(lora_name: str):
     import folder_paths
     import comfy.utils
@@ -66,7 +86,7 @@ def _default_loader(lora_name: str):
     key = (path, os.path.getmtime(path))
     lora = _LORA_CACHE.get(key)
     if lora is None:
-        lora = comfy.utils.load_torch_file(path, safe_load=True)
+        lora = strip_trainer_flags(comfy.utils.load_torch_file(path, safe_load=True), lora_name)
         if len(_LORA_CACHE) >= _LORA_CACHE_MAX:
             _LORA_CACHE.pop(next(iter(_LORA_CACHE)))
         _LORA_CACHE[key] = lora

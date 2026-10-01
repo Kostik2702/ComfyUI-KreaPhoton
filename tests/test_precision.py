@@ -138,9 +138,29 @@ def test_nonfinite(smp, sch):
     print("     NaN at the 2nd model call stops the loop with an actionable message")
 
 
+def test_lora_flags(lp):
+    w = torch.zeros(4, 4)
+    clean = {"a.lora_down.weight": w, "a.use_dora_flag": torch.tensor(0.0), "a.use_rslora_flag": torch.tensor(0.0)}
+    out = lp.strip_trainer_flags(dict(clean), "anna.safetensors")
+    assert set(out) == {"a.lora_down.weight"}, out.keys()
+    top_level = {"a.lora_down.weight": w, "use_dora_flag": torch.tensor(0.0), "use_rslora_flag": torch.tensor(0.0)}
+    assert set(lp.strip_trainer_flags(top_level, "anna.safetensors")) == {"a.lora_down.weight"}, \
+        "blissful-tuner files carry the flags as top-level keys"
+    rs = dict(clean)
+    rs["a.use_rslora_flag"] = torch.tensor(1.0)
+    _raises(lambda: lp.strip_trainer_flags(rs, "rs.safetensors"), needle="rs.safetensors")
+    dora = dict(clean)
+    dora["a.use_dora_flag"] = torch.tensor(1.0)
+    _raises(lambda: lp.strip_trainer_flags(dora, "dora.safetensors"), needle="DoRA")
+    plain = {"a.lora_down.weight": w}
+    assert lp.strip_trainer_flags(plain, "x") is plain, "no flags -> the same dict, no copy"
+    print("     zero flags dropped silently, rsLoRA / DoRA flag = 1 rejected with the file name")
+
+
 def main():
     pr = _load("precision")
     smp, sch = _load("sampling"), _load("schedules")
+    lp = _load("lora_phase")
     print("=" * 78)
     print("test_precision")
     print("=" * 78)
@@ -150,6 +170,8 @@ def main():
     test_resolve(pr)
     print("[3] non-finite model output guard")
     test_nonfinite(smp, sch)
+    print("[4] LoRA trainer-flag guard")
+    test_lora_flags(lp)
     print("\ntest_precision: ALL PASSED")
 
 
