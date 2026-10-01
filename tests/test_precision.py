@@ -116,8 +116,31 @@ def test_resolve(pr):
     print("     resolve: override wins, bad override rejected, describe names kind/profile/override")
 
 
+def test_nonfinite(smp, sch):
+    ok = torch.ones(1, 16, 1, 4, 4)
+    assert smp.check_finite(ok, 0.5) is ok
+    bad = ok.clone()
+    bad[0, 0, 0, 0, 0] = float("nan")
+    _raises(lambda: smp.check_finite(bad, 0.5), smp.NonFiniteModelOutput, needle="--bf16-unet")
+
+    calls = {"n": 0}
+
+    def nan_on_second(x, sigma, **kw):
+        calls["n"] += 1
+        return torch.full_like(x, float("nan")) if calls["n"] == 2 else x
+
+    sigmas = sch.build_schedule(8, restart_frac=0.0, plunge=False)
+    _raises(lambda: smp.kreaphoton_sampler_loop(nan_on_second, torch.randn(1, 16, 1, 4, 4), sigmas,
+                                                 detail_amount=0.0, order=1, eta0=0.0, sigma_gate=0.10,
+                                                 restart_seed=1),
+            smp.NonFiniteModelOutput, needle="sigma")
+    assert calls["n"] == 2, "the loop must stop at the first non-finite call"
+    print("     NaN at the 2nd model call stops the loop with an actionable message")
+
+
 def main():
     pr = _load("precision")
+    smp, sch = _load("sampling"), _load("schedules")
     print("=" * 78)
     print("test_precision")
     print("=" * 78)
@@ -125,6 +148,8 @@ def main():
     test_detect(pr)
     print("[2] resolve_profile / describe")
     test_resolve(pr)
+    print("[3] non-finite model output guard")
+    test_nonfinite(smp, sch)
     print("\ntest_precision: ALL PASSED")
 
 
