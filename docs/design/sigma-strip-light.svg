@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="250" viewBox="0 0 900 250">
+<rect width="900" height="250" fill="#f8f9f6"/>
+<g transform="translate(40 40) scale(2.3)"><rect x="249.2" y="0" width="98.8" height="34" fill="#f3e3de" opacity="0.55"/>
+<path d="M12.0 2.0 L31.8 2.5 L51.5 2.9 L71.3 3.5 L91.1 4.0 L110.8 4.6 L130.6 5.3 L150.4 6.0 L170.1 6.8 L189.9 7.6 L209.6 8.5 L229.4 9.5 L249.2 32.0" fill="none" stroke="#4b5155" stroke-width="1.4"/>
+<path d="M268.9 12.5 L288.7 17.4 L308.5 22.3 L328.2 27.1 L348.0 32.0" fill="none" stroke="#4b5155" stroke-width="1.4"/>
+<path d="M249.2 32.0 L268.9 12.5" stroke="#c24d1f" stroke-width="1.2" stroke-dasharray="2 2"/>
+<rect x="13.0" y="38" width="19.0" height="8" rx="1.5" fill="#2a78d6"/>
+<rect x="34.0" y="38" width="19.0" height="8" rx="1.5" fill="#2a78d6"/>
+<rect x="55.0" y="38" width="19.0" height="8" rx="1.5" fill="#2a78d6"/>
+<rect x="76.0" y="38" width="19.0" height="8" rx="1.5" fill="#2a78d6"/>
+<rect x="97.0" y="38" width="19.0" height="8" rx="1.5" fill="#2a78d6"/>
+<rect x="118.0" y="38" width="19.0" height="8" rx="1.5" fill="#2a78d6"/>
+<rect x="139.0" y="38" width="19.0" height="8" rx="1.5" fill="#2a78d6"/>
+<rect x="160.0" y="38" width="19.0" height="8" rx="1.5" fill="#2a78d6"/>
+<rect x="181.0" y="38" width="19.0" height="8" rx="1.5" fill="#13845d"/>
+<rect x="202.0" y="38" width="19.0" height="8" rx="1.5" fill="#13845d"/>
+<rect x="223.0" y="38" width="19.0" height="8" rx="1.5" fill="#13845d"/>
+<rect x="244.0" y="38" width="19.0" height="8" rx="1.5" fill="#6f7578"/>
+<rect x="265.0" y="38" width="19.0" height="8" rx="1.5" fill="#c24d1f"/>
+<rect x="286.0" y="38" width="19.0" height="8" rx="1.5" fill="#c24d1f"/>
+<rect x="307.0" y="38" width="19.0" height="8" rx="1.5" fill="#c24d1f"/>
+<rect x="328.0" y="38" width="19.0" height="8" rx="1.5" fill="#c24d1f"/></g>
+<text x="68.0" y="30.0" font-size="12" fill="#4b5155" text-anchor="start" font-weight="400" font-family="Inter,system-ui,-apple-system,'Segoe UI',sans-serif" >σ curve of the preset, computed on the server</text>
+<text x="560.0" y="30.0" font-size="12" fill="#4b5155" text-anchor="start" font-weight="400" font-family="Inter,system-ui,-apple-system,'Segoe UI',sans-serif" >restart: the draft is re-noised to σ 0.65</text>
+<line x1="260.8" y1="147.8" x2="260.8" y2="169.8" stroke="#2a78d6" stroke-width="1.5"/>
+<text x="260.8" y="185.8" font-size="12" fill="#15181a" text-anchor="middle" font-weight="400" font-family="Inter,system-ui,-apple-system,'Segoe UI',sans-serif" >composition, 8 calls</text>
+<line x1="526.5" y1="147.8" x2="526.5" y2="169.8" stroke="#13845d" stroke-width="1.5"/>
+<text x="526.5" y="185.8" font-size="12" fill="#15181a" text-anchor="middle" font-weight="400" font-family="Inter,system-ui,-apple-system,'Segoe UI',sans-serif" >identity, 3</text>
+<line x1="623.0" y1="147.8" x2="623.0" y2="183.8" stroke="#6f7578" stroke-width="1.5"/>
+<text x="623.0" y="199.8" font-size="12" fill="#15181a" text-anchor="middle" font-weight="400" font-family="Inter,system-ui,-apple-system,'Segoe UI',sans-serif" >draft, 1</text>
+<line x1="743.8" y1="147.8" x2="743.8" y2="169.8" stroke="#c24d1f" stroke-width="1.5"/>
+<text x="743.8" y="185.8" font-size="12" fill="#15181a" text-anchor="middle" font-weight="400" font-family="Inter,system-ui,-apple-system,'Segoe UI',sans-serif" >texture, 4</text>
+<text x="40.0" y="236.0" font-size="12" fill="#6f7578" text-anchor="start" font-weight="400" font-family="Inter,system-ui,-apple-system,'Segoe UI',sans-serif" >One cell = one model call. Colour is never the only carrier: the caption repeats the counts in words.</text>
+</svg>
