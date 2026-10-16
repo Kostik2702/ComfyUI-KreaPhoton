@@ -26,3 +26,7 @@ The initial scan is [Krea 2 Turbo landscape and experiment backlog](krea2-turbo-
 
 Character-specific identity and physique disentanglement is documented separately in
 [Character LoRA: identity without outfit/background lock-in](krea2-character-lora-identity.md).
+
+A training-free spatial variant of the detail envelope and gated eta, motivated by
+BudgetPix, is proposed in
+[Spatial detail allocation hypothesis](spatial-detail-allocation-hypothesis.md).
