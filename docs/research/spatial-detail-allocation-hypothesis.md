@@ -108,6 +108,35 @@ One uniform knob cannot be low on the first set and high on the second at the sa
 Debug output: save `m` as an image next to each result, so a failure can be attributed to the
 map rather than to the modulation.
 
+## Literature update (2026-10-16)
+
+A follow-up scan is recorded in [the Chinese-lab scan](cn-lab-scan-2026-10.md), section 1. It
+changes the design as follows. All points remain **Hypothesis** until measured.
+
+- **Supports variant A.** SANI (2609.18466) gates injected noise per pixel and reports that
+  smooth regions are degraded by it. That work uses small DDPM/DDIM models, not a flow DiT.
+- **Supports the frozen, post-structure map.** RAS (2502.10389) and SDiT (2601.12283) find the
+  complexity regions stable across steps once structure is formed, and both need dense early
+  steps.
+- **Design amendments:**
+  - **Feather or dilate the map, never threshold it.** SDiT measured that 1–2 px dilation beats
+    hard regions.
+  - **Cap the max/min ratio** of per-pixel eta and nudge. AsynDM (2510.04504) shows residual
+    noise and blur when region noise levels diverge too far.
+  - **Protect strong edges in variant B.** SAMG (2604.26503) lowers strength at high-energy
+    boundaries; this pairs with `trust_clamp`.
+  - **Add the per-patch std of the predicted velocity as a second map signal,** as in RAS. It
+    comes free from the existing model calls.
+- **Counter-evidence.** FreeEnhance (2409.07451) injects *more* noise into flat regions to grow
+  detail, in an img2img setting. This sharpens the main risk: the map must not suppress
+  stochasticity where flatness means underdeveloped texture (skin) rather than intended
+  smoothness (sky).
+- **Sibling candidate.** A high-pass-only detail / extrapolation delta (scan item C1) targets the
+  same R2 failure with no map at all. Run it as an arm in the same experiment. If it alone
+  matches the spatial variants, prefer it.
+- **Novelty.** No source found tests per-pixel ancestral eta on a distilled flow-matching DiT, or
+  measures halos from soft maps.
+
 ## Longer horizon
 
 If pixel-space models (for example Iris-3B, Apache 2.0) become practical, BudgetPix itself

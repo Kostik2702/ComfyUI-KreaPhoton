@@ -30,3 +30,7 @@ Character-specific identity and physique disentanglement is documented separatel
 A training-free spatial variant of the detail envelope and gated eta, motivated by
 BudgetPix, is proposed in
 [Spatial detail allocation hypothesis](spatial-detail-allocation-hypothesis.md).
+
+A scan of mostly Chinese-lab work on spatially adaptive sampling, training-free detail and
+artifact control, identity preservation, and layout control, with ranked candidates and
+experiments C1–C7, is in [Chinese-lab scan](cn-lab-scan-2026-10.md).
