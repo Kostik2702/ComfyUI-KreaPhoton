@@ -34,3 +34,6 @@ BudgetPix, is proposed in
 A scan of mostly Chinese-lab work on spatially adaptive sampling, training-free detail and
 artifact control, identity preservation, and layout control, with ranked candidates and
 experiments C1–C7, is in [Chinese-lab scan](cn-lab-scan-2026-10.md).
+
+Sources not yet scanned, ranked by expected value and with a proposed scan order, are listed
+in [Where to look next](source-map.md).
