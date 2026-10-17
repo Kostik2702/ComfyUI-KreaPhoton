@@ -175,9 +175,12 @@ class KreaPhotonSaveImage:
         }
 
     RETURN_TYPES = ()
+    OUTPUT_TOOLTIPS = ()
     FUNCTION = "save"
     OUTPUT_NODE = True
-    CATEGORY = "KreaPhoton"
+    CATEGORY = "KreaPhoton/5 Output"   # == ui_meta.CAT_OUTPUT; a literal so tests can load this module standalone
+    DESCRIPTION = "Saves to any folder with collision-free names, as PNG, JPEG or WebP with metadata."
+    SEARCH_ALIASES = ["krea save", "save to folder", "save image anywhere"]
 
     def save(self, images, folder_path, filename_prefix, format, quality,
              save_metadata, prompt=None, extra_pnginfo=None):

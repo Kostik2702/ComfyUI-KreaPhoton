@@ -54,6 +54,7 @@ from .presets import (COHERENCE, COHERENCE_OPTIONS, DEFAULT_PRESET, GUIDANCE, MA
                       PRESETS, VARIETY_COND_TAPS, VARIETY_END, VARIETY_LEVELS, preset_guidance)
 from .sampling import run_sampling
 from .schedules import PLUNGE_SIGMA_FLOOR, build_schedule
+from .ui_meta import CAT_PREVIEW
 
 COMPOSITION_END = 0.85          # the sampler's composition_end (presets.LORA_PHASES "composition")
 MAX_DRAFTS = 16
@@ -278,8 +279,15 @@ class KreaPhotonCompositionDrafts:
 
     RETURN_TYPES = ("IMAGE", "IMAGE", "INT", "STRING")
     RETURN_NAMES = ("sheet", "drafts", "best_seed", "report")
+    OUTPUT_TOOLTIPS = ("Contact sheet of all drafts with seed, layout score and the best one marked.",
+                       "The draft images as a batch.",
+                       "Seed of the best-ranked draft; wire it to the Sampler's seed.",
+                       "Per-draft detections and scores as text.")
     FUNCTION = "draft"
-    CATEGORY = "KreaPhoton"
+    CATEGORY = CAT_PREVIEW
+    DESCRIPTION = ("Renders the first model calls of several seeds as a contact sheet and picks the best "
+                   "layout.")
+    SEARCH_ALIASES = ["composition preview", "seed picker", "layout drafts", "contact sheet"]
 
     def draft(self, model, positive, latent_image, vae, seed, preset, n_drafts, draft_calls, seed_step, variety,
               negative=None, clean_model=None, coherence="off", layout=""):

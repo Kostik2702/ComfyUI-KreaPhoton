@@ -19,11 +19,11 @@ from .save import KreaPhotonSaveImage
 from .schedules import (ALPHA, PLUNGE_SIGMA_FLOOR, SHIFT, SOFT_PLUNGE_MAX, alpha_for_latent, build_schedule,
                         refine_schedule)
 from .tiling import LatentTiler, LFAnchor
+from .ui_meta import CAT_FINISHING, CAT_SAMPLING, CAT_SETUP
 
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 
-CATEGORY = "KreaPhoton"
 _ORDER_FROM_SAMPLER_NAME = {"euler": 1, "euler_2m": 2, "rf_2m": 2}   # name -> order; the name itself
                                                                        # is passed on as `solver`
 
@@ -59,50 +59,53 @@ _DENOISE_TOOLTIP = ("Refine / img2img strength (standard KSampler denoise semant
                     "full-txt2img-only and skipped).")
 
 
-_RESTART_ENHANCE_TOOLTIP = ("EXPERIMENTAL (v1.4): at the restart boundary the plunge x0 is decoded, "
+_RESTART_ENHANCE_TOOLTIP = ("Experimental: at the restart boundary the plunge x0 is decoded, "
                             "run through NVIDIA DLSS 5 Photoreal Enhance V2 (custom node pack "
                             "ComfyUI-dlss-enhancer must be installed), re-encoded and re-noised into "
                             "the texture phase - the last steps re-synthesise texture around the "
                             "enhanced lighting/materials. Needs `vae` connected. Adds one VAE decode, "
                             "one encode and one DLSS pass per image.")
-_TEXTURE_MODEL_TOOLTIP = ("Optional phase model (v1.4): the restart / texture phase (sigma <= 0.65) runs "
+_TEXTURE_MODEL_TOOLTIP = ("Optional phase model: the restart / texture phase (sigma <= 0.65) runs "
                           "on THIS model, the identity phase on `model`, the composition phase on "
                           "`clean_model` if connected. LoRA phase scheduling that works on any checkpoint "
                           "(incl. int8/fp8 quantized): e.g. model = base + character LoRA, clean_model = "
                           "base, texture_model = base + character + style LoRAs. Each phase switch costs "
                           "one LoRA re-patch (a few seconds on a 12B model).")
-_COHERENCE_TOOLTIP = ("Power-Nodes-derived coherence tools (v1.4). jump = one-time jump-back on the "
+_COHERENCE_TOOLTIP = ("Coherence tools. jump = one-time jump-back on the "
                       "composition step (the model sees the state cleaner than declared and commits "
                       "harder to structure; free). self_refine = after the plunge draft, re-noise to "
                       "sigma 0.85 and re-descend 4 steps, plunge again, then the usual restart: the "
                       "model re-decides faces/bodies/clothing with the whole draft as a prior (+4 model "
                       "calls). Use self_refine when LoRA stacks or crowded scenes come out incoherent.")
-_ETA_TAIL_TOOLTIP = ("EXPERIMENTAL (Sampler v2): eta0 for the restart tail only - the steps after the last "
+_ETA_TAIL_TOOLTIP = ("Experimental: eta0 for the restart tail only - the steps after the last "
                      "re-noise jump that lands below sigma 0.75 (a self-refine jump keeps eta0). 0 = "
                      "deterministic restart tail: with eta0 > 0 the only place the 2m solvers can run (they "
                      "need two deterministic steps in a row; a gated eta0 > 0 leaves them none elsewhere). "
                      "-1 = off (eta0 everywhere). No effect on a schedule without a restart jump.")
-_GUIDANCE_SIGMA_TOOLTIP = ("EXPERIMENTAL (Sampler v2): which sigma the guidance policy (window/band scale, PAG "
+_GUIDANCE_SIGMA_TOOLTIP = ("Experimental: which sigma the guidance policy (window/band scale, PAG "
                            "gate) reads. model = the sigma the model is queried at, which the detail nudge "
-                           "moves below the trajectory's (v1: changing detail_amount also moves the guidance); "
+                           "moves below the trajectory's (classic behaviour: changing detail_amount also moves "
+                           "the guidance); "
                            "true = the trajectory sigma - detail and guidance tuned independently.")
-_DETAIL_SPACE_TOOLTIP = ("EXPERIMENTAL (Sampler v2): step = the v1 detail envelope over the step index "
+_DETAIL_SPACE_TOOLTIP = ("Experimental: step = the classic detail envelope over the step index "
                          "(detail_start/end/peak are fractions of the run - its meaning moves with the step count, "
                          "restart fraction, self-refine); sigma = over the state's sigma: 0 above "
-                         "detail_sigma_hi, peak at detail_sigma_peak, 0 below detail_sigma_lo (phase-aware "
-                         "default 0.90 / 0.50 / 0.12: no nudge on the composition, strongest in the texture tail).")
-_X0_ORDER_TOOLTIP = ("EXPERIMENTAL (Sampler v2): terminal x0 extrapolation through the last 2 model calls "
-                     "(1, linear, v1) or 3 (2, quadratic). Needs x0_extrapolation > 0.")
-_X0_TRUST_TOOLTIP = ("EXPERIMENTAL (Sampler v2): trust region of the terminal x0 extrapolation - the step is "
+                         "detail_sigma_hi, peak at detail_sigma_peak, 0 below detail_sigma_lo (default "
+                         "0.97 / 0.80 / 0.55: the step envelope's shape, independent of the step count). Do not "
+                         "move the peak into the texture tail at high detail_amount: 0.90 / 0.50 / 0.12 at 0.7 "
+                         "was measured to cover skin in a coloured mesh.")
+_X0_ORDER_TOOLTIP = ("Experimental: terminal x0 extrapolation through the last 2 model calls "
+                     "(1, linear) or 3 (2, quadratic). Needs x0_extrapolation > 0.")
+_X0_TRUST_TOOLTIP = ("Experimental: trust region of the terminal x0 extrapolation - the step is "
                      "limited per pixel to this many times the local (3x3) rms of the last x0 step, so isolated "
                      "overshoots (halos, speckle) are cut and smooth extrapolation passes. 0 = off. Try 1.0.")
-_PC_TOOLTIP = ("EXPERIMENTAL (Sampler v2): predictor-corrector (Heun) at three strategic steps - the "
+_PC_TOOLTIP = ("Experimental: predictor-corrector (Heun) at three strategic steps - the "
                "composition -> identity boundary, the first restart-tail step, the last detail step; one extra "
                "model call each. selective = always; auto = only where the x0 estimate is still moving.")
-_REFINE_MODE_TOOLTIP = ("EXPERIMENTAL (Sampler v2): on = the self-refine pass in the SIGMAS runs as given; "
+_REFINE_MODE_TOOLTIP = ("Experimental: on = the self-refine pass in the SIGMAS runs as given; "
                         "auto = it is skipped (no model calls) when the draft stopped moving over the identity "
                         "phase. Only acts on a schedule with a refine pass (Scheduler refine_steps > 0).")
-_PAG_SCALE_TOOLTIP = ("EXPERIMENTAL (v1.4): perturbed-attention guidance. Inside [pag_lo, pag_hi] a "
+_PAG_SCALE_TOOLTIP = ("Experimental: perturbed-attention guidance. Inside [pag_lo, pag_hi] a "
                       "second conditional forward runs with identity self-attention in pag_blocks and "
                       "denoised += pag_scale * (cond - perturbed): structure/anatomy guidance that "
                       "needs no negative. 0 = off. +1 model call per step inside the window.")
@@ -225,11 +228,11 @@ class KreaPhotonSampler:
             "optional": {
                 "negative": ("CONDITIONING",),
                 "clean_model": ("MODEL", {
-                    "tooltip": "Optional: composition phase (sigma > composition_end) runs on "
-                               "this clean checkpoint, LoRA identity/detail phase on `model` "
-                               "(anti-mutation, ZPhoton-proven pattern; unvalidated on krea2 "
-                               "LoRA stacks per docs/04 item 7). EXPERIMENTAL: this is the one "
-                               "remaining two-lifecycle split and it forces eta0=0."}),
+                    "tooltip": "Runs the composition phase (sigma > composition_end) on this model "
+                               "instead of `model`, so a character LoRA cannot steer the layout; the "
+                               "identity/detail phase stays on `model`. Experimental: not yet validated "
+                               "with Krea 2 LoRA stacks. It is the one remaining two-lifecycle split "
+                               "and forces eta0 to 0."}),
                 "vae": ("VAE", {"tooltip": _VAE_PREVIEW_TOOLTIP}),
                 "seed_b": ("INT", {"default": -1, "min": -1, "max": 0xffffffffffffffff,
                                    "tooltip": _SEED_B_TOOLTIP}),
@@ -243,8 +246,12 @@ class KreaPhotonSampler:
         }
 
     RETURN_TYPES = ("LATENT",)
+    OUTPUT_TOOLTIPS = ("The finished Krea 2 latent; decode it with VAE Decode.",)
     FUNCTION = "sample"
-    CATEGORY = CATEGORY
+    CATEGORY = CAT_SAMPLING
+    DESCRIPTION = ("Generates a Krea 2 Turbo image from a preset: seed, preset and variety, everything else "
+                   "computed.")
+    SEARCH_ALIASES = ["krea sampler", "krea2 sampler", "restart sampler", "photoreal sampler"]
 
     def sample(self, model, positive, latent_image, seed, preset, variety,
               preview_method="auto", denoise=1.0, negative=None, clean_model=None, vae=None,
@@ -338,24 +345,23 @@ class KreaPhotonSamplerAdvanced:
                 "sigma_gate": ("FLOAT", {"default": 0.10, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "contraction": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 1.5, "step": 0.01,
                                           "tooltip": "Initial noise amplitude scale. 1.0 = stock unit noise; "
-                                                     "presets use 0.70 (V5: cleaner shadows, more inter-seed "
-                                                     "diversity, softer photographic look). Above 1.0 = the "
-                                                     "'intensity' direction of Z-Image Power Nodes: more contrast, "
-                                                     "sharper edges, more saturation (up to 1.4 there). Photo "
-                                                     "styles usually prefer <= 1.0."}),
+                                                     "most Turbo presets use 0.70, turbo/candid 0.85 (cleaner "
+                                                     "shadows, more inter-seed diversity, softer photographic "
+                                                     "look on the calibration prompts). Above 1.0 = more "
+                                                     "contrast, sharper edges, more saturation. Photo styles "
+                                                     "usually prefer <= 1.0."}),
                 "per_channel_contraction": ("BOOLEAN", {"default": False}),
                 "guidance_mode": (["off", "flat", "window", "band"], {"default": "off"}),
                 "flat_cfg": ("FLOAT", {"default": GUIDANCE["flat_cfg"], "min": 1.0, "max": 4.0, "step": 0.01}),
                 "delta": ("FLOAT", {"default": GUIDANCE["delta"], "min": 0.0, "max": 3.0, "step": 0.01,
-                                    "tooltip": "Guidance strength. window (M6 ramp): g(sigma) = 1 + delta * "
+                                    "tooltip": "Guidance strength. window: g(sigma) = 1 + delta * "
                                                "smoothstep rising across [guidance_lo, guidance_hi], FULL "
                                                "1 + delta above guidance_hi (the whole composition phase). "
-                                               "band (Sampler v2, experimental): 1 + delta * sin^2 only "
-                                               "inside (guidance_lo, guidance_hi), 1.0 outside. 1.25 "
-                                               "V1-validated (window); 1.5 hallucinates. When "
+                                               "band (experimental): 1 + delta * sin^2 only "
+                                               "inside (guidance_lo, guidance_hi), 1.0 outside. 1.25 is "
+                                               "the validated window value; 1.5 hallucinates. When "
                                                "variety_a_latent > 0 the effective delta is delta * (1 - 0.45 "
-                                               "* a_latent) - variety consumes the hallucination budget "
-                                               "(V16b)."}),
+                                               "* a_latent) - variety consumes the hallucination budget."}),
                 "guidance_lo": ("FLOAT", {"default": GUIDANCE["lo"], "min": 0.0, "max": 1.0, "step": 0.01}),
                 "guidance_hi": ("FLOAT", {"default": GUIDANCE["hi"], "min": 0.0, "max": 1.0, "step": 0.01}),
                 "variety_a_latent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
@@ -405,8 +411,8 @@ class KreaPhotonSamplerAdvanced:
                                                        "calibrated grids)."}),
                 "coherence_jump": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.6, "step": 0.01,
                                              "tooltip": "One-time jump-back strength on the first step at/"
-                                                        "below coherence_jump_sigma (0.19 = Power Nodes' "
-                                                        "0.920->0.935 boundary). 0 = off. Self-refine lives "
+                                                        "below coherence_jump_sigma (0.19 = the preset value). "
+                                                        "0 = off. Self-refine lives "
                                                         "in the Scheduler (refine_steps)."}),
                 "coherence_jump_sigma": ("FLOAT", {"default": COHERENCE["jump_sigma"], "min": 0.5, "max": 1.0,
                                                    "step": 0.01}),
@@ -426,8 +432,12 @@ class KreaPhotonSamplerAdvanced:
         }
 
     RETURN_TYPES = ("LATENT",)
+    OUTPUT_TOOLTIPS = ("The finished Krea 2 latent; decode it with VAE Decode.",)
     FUNCTION = "sample"
-    CATEGORY = CATEGORY
+    CATEGORY = CAT_SAMPLING
+    DESCRIPTION = ("The same sampling loop with every parameter exposed. Takes a SIGMAS schedule from the "
+                   "KreaPhoton Scheduler.")
+    SEARCH_ALIASES = ["krea sampler advanced", "krea2 custom sampler", "restart sampler advanced"]
 
     def sample(self, model, positive, latent_image, sigmas, seed, sampler_order,
               detail_amount, detail_start, detail_end, detail_peak, eta0, sigma_gate,
@@ -485,8 +495,8 @@ class KreaPhotonScheduler:
                 "alpha": ("FLOAT", {"default": ALPHA, "min": 1.0, "max": 10.0, "step": 0.001,
                                     "tooltip": "Schedule steepness. Stock krea2 shift (mu=1.15) "
                                                "== e^1.15 = 3.158 (default). Higher = softer/less "
-                                               "detail but more seed variance; critic-verified stock "
-                                               "is not arbitrary (docs/04)."}),
+                                               "detail but more seed variance. The stock value was "
+                                               "checked and is not arbitrary."}),
                 "restart_frac": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 0.6, "step": 0.01,
                                           "tooltip": "Fraction of steps spent in the restart "
                                                      "(re-noise) segment. 0 = plain descent, no "
@@ -501,7 +511,7 @@ class KreaPhotonScheduler:
                                                  "1.15 at 6400; alpha = min(alpha, e^mu)). L/XL tiers are "
                                                  "unchanged, 1 MP grids get the softer canonical schedule."}),
                 "refine_steps": ("INT", {"default": 0, "min": 0, "max": 12,
-                                         "tooltip": "Self-refine pass (v1.4): after the plunge draft, re-noise "
+                                         "tooltip": "Self-refine pass: after the plunge draft, re-noise "
                                                     "to refine_sigma and descend this many extra model calls "
                                                     "to the plunge floor, plunge again, then the restart. "
                                                     "Needs plunge=true. 0 = off. Try 4."}),
@@ -511,21 +521,26 @@ class KreaPhotonScheduler:
                                                       "draft's layout (~img2img 0.6) and re-renders bodies / "
                                                       "faces / clothing; 0.93+ lets the model re-decide more."}),
                 "plunge_sigma": ("FLOAT", {"default": PLUNGE_SIGMA_FLOOR, "min": 0.5, "max": 0.95, "step": 0.01,
-                                           "tooltip": "EXPERIMENTAL (Sampler v2): the plunge floor - where the "
+                                           "tooltip": "Experimental: the plunge floor - where the "
                                                       "structure phase stops and the model one-shots the draft. "
-                                                      "0.75 = V2-validated default; lower = the draft forms later "
+                                                      "0.75 = the validated default; lower = the draft forms later "
                                                       "(hands, groups, text may benefit), higher = earlier."}),
                 "soft_plunge": ("INT", {"default": 0, "min": 0, "max": SOFT_PLUNGE_MAX,
-                                        "tooltip": "EXPERIMENTAL (Sampler v2): 1 = one bridge step between the "
+                                        "tooltip": "Experimental: 1 = one bridge step between the "
                                                    "plunge floor and the draft readout (0.75 -> 0.375 -> 0), taken "
                                                    "from the structure steps - model calls unchanged. 0 = the hard "
-                                                   "plunge (v1). Longer bridges were measured to break the draft."}),
+                                                   "plunge (classic). Longer bridges were measured to break the draft."}),
             },
         }
 
     RETURN_TYPES = ("SIGMAS",)
+    OUTPUT_TOOLTIPS = ("The sigma schedule. With restart_frac > 0 it contains an upward restart jump that only "
+                       "KreaPhoton Sampler (Advanced) understands; stock SamplerCustom ignores it.",)
     FUNCTION = "build"
-    CATEGORY = CATEGORY
+    CATEGORY = CAT_SAMPLING
+    DESCRIPTION = ("Builds the sigma schedule: structure descent, draft, restart and texture tail. Only "
+                   "KreaPhoton samplers understand the restart.")
+    SEARCH_ALIASES = ["krea scheduler", "krea2 sigmas", "restart schedule"]
 
     def build(self, steps, alpha, restart_frac, sigma_r, plunge, latent=None, refine_steps=0,
               refine_sigma=COHERENCE["refine_sigma"], plunge_sigma=PLUNGE_SIGMA_FLOOR, soft_plunge=0):
@@ -554,8 +569,11 @@ class KreaPhotonEmptyLatent:
         }
 
     RETURN_TYPES = ("LATENT",)
+    OUTPUT_TOOLTIPS = ("An empty 16-channel Krea 2 latent at the chosen size and aspect.",)
     FUNCTION = "generate"
-    CATEGORY = CATEGORY
+    CATEGORY = CAT_SETUP
+    DESCRIPTION = "An empty Krea 2 latent in photo aspect ratios, four megapixel sizes."
+    SEARCH_ALIASES = ["krea empty latent", "krea2 latent", "resolution", "aspect ratio"]
 
     def generate(self, size, aspect, batch_size):
         width, height = RESOLUTION_BUCKETS[size][aspect]
@@ -608,8 +626,11 @@ class KreaPhotonEncode:
         }
 
     RETURN_TYPES = ("CONDITIONING",)
+    OUTPUT_TOOLTIPS = ("Krea 2 conditioning for the prompt, with the style directive in front of it.",)
     FUNCTION = "encode"
-    CATEGORY = CATEGORY
+    CATEGORY = CAT_SETUP
+    DESCRIPTION = "Krea 2 text encode with an optional style directive in front of the prompt."
+    SEARCH_ALIASES = ["krea encode", "krea2 text encode", "prompt", "style directive"]
 
     def encode(self, clip, text, style, custom_directive=""):
         if style == "custom":
@@ -656,8 +677,13 @@ class KreaPhotonLoraPhase:
         }
 
     RETURN_TYPES = ("MODEL",)
+    OUTPUT_TOOLTIPS = ("The model carrying this LoRA in its phase plan; chain the next LoRA Phase or connect a "
+                       "KreaPhoton sampler. Other samplers see the model without the LoRA.",)
     FUNCTION = "apply"
-    CATEGORY = CATEGORY
+    CATEGORY = CAT_SETUP
+    DESCRIPTION = ("Applies a LoRA only during one phase: composition, identity or texture. Chain one per "
+                   "LoRA.")
+    SEARCH_ALIASES = ["lora by phase", "krea lora", "phase lora", "lora schedule"]
 
     def apply(self, model, lora_name, strength, phase):
         return (add_to_plan(model, lora_name, strength, phase),)
@@ -837,8 +863,11 @@ class KreaPhotonUpscale:
         }
 
     RETURN_TYPES = ("IMAGE",)
+    OUTPUT_TOOLTIPS = ("The upscaled image; downscaled back it reproduces the source.",)
     FUNCTION = "upscale"
-    CATEGORY = CATEGORY
+    CATEGORY = CAT_FINISHING
+    DESCRIPTION = "The original faithful upscaler, kept as calibrated."
+    SEARCH_ALIASES = ["krea upscale classic", "faithful upscale", "tiled upscale"]
 
     def upscale(self, model, positive, image, vae, seed, preset, scale, negative=None, upscale_model=None,
                 tune=""):
@@ -893,18 +922,20 @@ from .upscale_v2 import KreaPhotonUpscaleV2  # noqa: E402  (imports nodes.py hel
 from .face_detailer import KreaPhotonFaceDetailer  # noqa: E402  (same pattern)
 from .composition import KreaPhotonCompositionDrafts  # noqa: E402  (same pattern)
 
+# Registration order = pipeline order: the node library lists sub-categories in the order their
+# first node registers (not alphabetically), so this order is what puts "1 Setup" first.
 NODE_CLASS_MAPPINGS.update({
+    "KreaPhotonEmptyLatent": KreaPhotonEmptyLatent,
+    "KreaPhotonEncode": KreaPhotonEncode,
+    "KreaPhotonLoraPhase": KreaPhotonLoraPhase,
+    "KreaPhotonCompositionDrafts": KreaPhotonCompositionDrafts,
     "KreaPhotonSampler": KreaPhotonSampler,
     "KreaPhotonSamplerAdvanced": KreaPhotonSamplerAdvanced,
     "KreaPhotonScheduler": KreaPhotonScheduler,
-    "KreaPhotonEmptyLatent": KreaPhotonEmptyLatent,
-    "KreaPhotonEncode": KreaPhotonEncode,
-    "KreaPhotonSaveImage": KreaPhotonSaveImage,
-    "KreaPhotonLoraPhase": KreaPhotonLoraPhase,
-    "KreaPhotonUpscale": KreaPhotonUpscale,
     "KreaPhotonUpscaleV2": KreaPhotonUpscaleV2,
+    "KreaPhotonUpscale": KreaPhotonUpscale,
     "KreaPhotonFaceDetailer": KreaPhotonFaceDetailer,
-    "KreaPhotonCompositionDrafts": KreaPhotonCompositionDrafts,
+    "KreaPhotonSaveImage": KreaPhotonSaveImage,
 })
 NODE_DISPLAY_NAME_MAPPINGS.update({
     "KreaPhotonSampler": "KreaPhoton Sampler",
@@ -914,7 +945,7 @@ NODE_DISPLAY_NAME_MAPPINGS.update({
     "KreaPhotonEncode": "KreaPhoton Encode",
     "KreaPhotonSaveImage": "KreaPhoton Save Image",
     "KreaPhotonLoraPhase": "KreaPhoton LoRA Phase",
-    "KreaPhotonUpscale": "KreaPhoton Upscale",
+    "KreaPhotonUpscale": "KreaPhoton Upscale (classic)",
     "KreaPhotonUpscaleV2": "KreaPhoton Upscale v2",
     "KreaPhotonFaceDetailer": "KreaPhoton Face Detailer",
     "KreaPhotonCompositionDrafts": "KreaPhoton Composition Drafts",

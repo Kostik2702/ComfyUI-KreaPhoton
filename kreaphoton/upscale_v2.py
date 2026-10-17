@@ -24,6 +24,7 @@ from .presets import (ANCHOR, DEFAULT_UPSCALE_V2_PRESET, FIDELITY, GUIDANCE, MAN
 from .sampling import run_inversion, run_sampling
 from .schedules import ALPHA, SHIFT, alpha_for_latent, refine_schedule
 from .tiling import LFAnchor, LatentTilerV2, activity_map
+from .ui_meta import CAT_FINISHING
 
 _V2_PRESET_TOOLTIP = ("v2 presets: polish 0.10 / 6, detail 0.20 / 8, strong 0.35 / 10 steps, contraction 1.0; "
                       "tiles without detail (bokeh, sky, walls) are skipped and the tile grid moves every "
@@ -115,8 +116,12 @@ class KreaPhotonUpscaleV2:
         }
 
     RETURN_TYPES = ("IMAGE",)
+    OUTPUT_TOOLTIPS = ("The upscaled image; downscaled back it reproduces the source.",)
     FUNCTION = "upscale"
-    CATEGORY = "KreaPhoton"
+    CATEGORY = CAT_FINISHING
+    DESCRIPTION = ("Upscales x1.25 to x2 and redraws fine texture with the same model; the result stays true "
+                   "to the source.")
+    SEARCH_ALIASES = ["krea upscale", "faithful upscale", "tiled upscale", "detail upscale"]
 
     def upscale(self, model, positive, image, vae, seed, preset, scale, negative=None, upscale_model=None,
                 tune=""):

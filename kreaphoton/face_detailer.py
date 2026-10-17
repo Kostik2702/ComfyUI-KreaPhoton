@@ -58,6 +58,7 @@ from .presets import (DEFAULT_FACE_PRESET, FACE_COMMON, FACE_PRESETS, GUIDANCE, 
 from .ref_mean import REF_MEAN_EXPERIMENTAL_BETA, RefMeanHook, build_reference_bank
 from .sampling import run_inversion, run_sampling
 from .schedules import ALPHA, SHIFT, alpha_for_latent, refine_schedule
+from .ui_meta import CAT_FINISHING
 
 _PRESET_TOOLTIP = ("subtle: one pass 1024 px / denoise 0.25 (LoRA-identity safe). standard: 1024 / 0.35 then "
                    "1536 / 0.15 for skin texture. strong: 1024 / 0.45 then 1536 / 0.20 (small faces on "
@@ -197,8 +198,14 @@ class KreaPhotonFaceDetailer:
 
     RETURN_TYPES = ("IMAGE", "MASK", "STRING")
     RETURN_NAMES = ("image", "mask", "report")
+    OUTPUT_TOOLTIPS = ("The image with the detailed faces pasted back.",
+                       "Feathered mask of the face regions that were pasted back (empty where nothing changed).",
+                       "Per-face result as text: identity score, kept / retried / skipped.")
     FUNCTION = "detail"
-    CATEGORY = "KreaPhoton"
+    CATEGORY = CAT_FINISHING
+    DESCRIPTION = ("Finds faces, redraws them at higher resolution and checks the identity is kept; retries on "
+                   "drift.")
+    SEARCH_ALIASES = ["face fix", "face detailer", "face restore", "krea face"]
 
     def detail(self, model, positive, image, vae, seed, preset, max_faces, identity_boost=1.5, negative=None,
                face_positive=None, reference_image=None, upscale_model=None, tune="", ref_mean_guidance=False):
