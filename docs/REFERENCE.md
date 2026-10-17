@@ -33,7 +33,7 @@ is labeled as such, in the README and in `presets.py`.
 | **KreaPhoton Encode** | krea2-native text encode (plain `KREA2_TEMPLATE` path) with an optional calibrated style directive. |
 | **KreaPhoton LoRA Phase** | Records a LoRA + strength + phase (composition / identity / texture / …) in a plan the model carries; the KreaPhoton samplers, upscalers and the Face Detailer expand the plan into phase models with comfy's ordinary LoRA patching (works on int8 / fp8 checkpoints). Chain one per LoRA. |
 | **KreaPhoton Save Image** | Save with folder picker, timestamp+counter unique names, PNG/JPEG/WebP metadata. Local-only power-user feature (the folder browser has no path allowlist - do not expose a `--listen` server). |
-| **KreaPhoton Upscale** | Faithful tiled ×1.25–×2.0 upscale with the same Krea 2 model: latent tiles re-blended every step (no seams), back-projection to the source (the downscaled result *is* the source), presets only, optional SR-model base. |
+| **KreaPhoton Upscale (classic)** | Faithful tiled ×1.25–×2.0 upscale with the same Krea 2 model: latent tiles re-blended every step (no seams), back-projection to the source (the downscaled result *is* the source), presets only, optional SR-model base. |
 | **KreaPhoton Upscale v2** | The same faithful refine plus empty-tile skipping, per-step grid shift and optional noise inversion; its own preset calibration (`polish` / `detail` / `strong`), shipped separately so v1 stays as calibrated. |
 | **KreaPhoton Face Detailer** | YOLO face detection → the `max_faces` largest faces redrawn at 1024 → 1536 px with the same sampler on the LoRA plan's texture model (identity LoRAs boosted ×1.5), ArcFace identity gate with keep-best retry, feathered paste. Presets `subtle` / `standard` / `strong`. |
 | **KreaPhoton Composition Drafts** | Pick the composition before paying for the image: N seeds × the first `draft_calls` model calls of the preset (default 2 — the subject's placement and framing are decided by the first two calls, within 2 % of the finished frame), x0 readout decoded into a labelled contact sheet, YOLO layout verifier (faces / persons / hands, subject third, shot type) against an optional JSON spec, `best_seed` out. The chosen seed reproduces bit-exactly in the Sampler. |
@@ -267,7 +267,7 @@ them with the stock `ConditioningSetTimestepRange` + `ConditioningCombine` nodes
 guider honours conditioning timestep ranges like any ComfyUI sampler. Cover the whole
 range, or a step with no active positive falls back to comfy's zeroed conditioning.
 
-### KreaPhoton Upscale
+### KreaPhoton Upscale (classic)
 
 Faithful tiled ×1.25–×2.0 upscale with the same Krea 2 Turbo checkpoint: a light
 diffusion refine adds real micro-texture and edge definition, and a source-consistency
