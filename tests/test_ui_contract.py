@@ -194,6 +194,22 @@ def main():
         assert not JARGON.search(clean), "jargon guard flags ordinary text %r" % clean
     print("     none; guard catches every planted id and passes ordinary text")
 
+    print("[6] web/kreaphoton_theme.js colours every node and every LoRA phase (P1)")
+    web = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+    js = open(os.path.join(web, "kreaphoton_theme.js"), encoding="utf-8").read()
+    fam_block = re.search(r"export const FAMILY = \{(.*?)\};", js, re.S).group(1)
+    fam = dict(re.findall(r"(\w+):\s*\"(\w+)\"", fam_block))
+    assert set(fam) == set(nodes.NODE_CLASS_MAPPINGS), "FAMILY out of sync with the node list: %s" % (
+        set(fam) ^ set(nodes.NODE_CLASS_MAPPINGS))
+    assert set(fam.values()) <= {"composition", "identity", "texture", "neutral", "phase"}, fam
+    phase_block = re.search(r"const PHASE_FAMILY = \{(.*?)\};", js, re.S).group(1)
+    phases = set(re.findall(r"\"?([\w+]+)\"?:\s*\"\w+\"", phase_block))
+    presets = importlib.import_module("kreaphoton.presets")
+    assert set(presets.LORA_PHASES) <= phases, "LoRA phase without a colour: %s" % (set(presets.LORA_PHASES) - phases)
+    save_js = open(os.path.join(web, "kreaphoton_save.js"), encoding="utf-8").read()
+    assert "Choose folder" in save_js and not re.search("[\U0001F300-\U0001FAFF]", save_js), "emoji in the Save UI"
+    print("     %d nodes, %d LoRA phases mapped; Save UI has no emoji" % (len(fam), len(presets.LORA_PHASES)))
+
     print("\nALL TESTS PASSED")
 
 
