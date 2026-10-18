@@ -368,7 +368,12 @@ character LoRA (three seeds, ArcFace to the LoRA's 120 training faces): 0.660 �
 −0.014…+0.038 — **no likeness gain beyond seed noise**; the exact posterior (`rm_tau` 1) is a
 hard argmax toward one reference and hurts (gate 0.678 → 0.637 at β 0.4), β 0.7 visibly blurs
 the face toward the mean. Kept as a knob for further experiments (`tune` keys `rm_beta`,
-`rm_lo`, `rm_hi`, `rm_tau`, `rm_pass`); the report line names it. Outputs: `image`, `mask` (union of
+`rm_lo`, `rm_hi`, `rm_tau`, `rm_pass`); the report line names it. `gender` — `any` (default,
+every face, the classifier is not called) / `female` / `male`: for multi-person frames, detector
+boxes are matched to insightface genderage verdicts (`buffalo_l`) by IoU ≥ 0.3, greedily, and
+only faces of that gender go on to the usual `max_faces` selection. No face of that gender, or
+no classifier, leaves the image unchanged and the report says why — the node never details the
+wrong person. Outputs: `image`, `mask` (union of
 the pasted faces, for chaining), `report` (per face: bbox, every attempt's denoise / seed /
 id_sim, the verdict; also printed to the console).
 

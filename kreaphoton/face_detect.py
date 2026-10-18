@@ -18,6 +18,7 @@ ARCFACE_PACK = "buffalo_l"
 
 _YOLO_CACHE = {}       # path -> ultralytics.YOLO
 _GATE = None           # ArcFaceGate singleton
+_GENDERS = None        # GenderClassifier singleton
 
 
 # ------------------------------------------------------------------ pure helpers
@@ -155,3 +156,48 @@ def get_gate() -> ArcFaceGate:
     if _GATE is None:
         _GATE = ArcFaceGate()
     return _GATE
+
+
+# ------------------------------------------------------------------ gender classifier
+class GenderClassifier:
+    """Per-face gender for the node's `gender` filter (2026-10-01): insightface detection +
+    genderage heads of the same buffalo_l pack (genderage.onnx; face.gender 1 = male, 0 = female).
+    Built only when the filter is used - the ArcFace gate keeps its faster detection+recognition
+    app. `available` False with `reason` when the package or pack is missing."""
+
+    def __init__(self, pack: str = ARCFACE_PACK):
+        self.available = False
+        self.reason = ""
+        self._app = None
+        try:
+            import folder_paths  # top-level ComfyUI module
+            from insightface.app import FaceAnalysis
+            root = os.path.join(folder_paths.models_dir, "insightface")
+            pack_dir = os.path.join(root, "models", pack)
+            if not os.path.isfile(os.path.join(pack_dir, "genderage.onnx")):
+                raise RuntimeError("genderage.onnx not found in %s" % pack_dir)
+            app = FaceAnalysis(name=pack, root=root, providers=["CPUExecutionProvider"],
+                               allowed_modules=["detection", "genderage"])
+            app.prepare(ctx_id=-1, det_size=(640, 640))
+            self._app = app
+            self.available = True
+        except Exception as e:  # ImportError, missing pack, onnxruntime trouble
+            self.reason = "%s: %s" % (type(e).__name__, e)
+
+    def faces(self, image_bhwc: torch.Tensor):
+        """[((x0, y0, x1, y1), 'female' | 'male')] for every face insightface finds."""
+        if not self.available:
+            return []
+        out = []
+        for f in self._app.get(_to_bgr_uint8(image_bhwc)):
+            if getattr(f, "gender", None) is None:
+                continue
+            out.append((tuple(float(v) for v in f.bbox[:4]), "male" if int(f.gender) == 1 else "female"))
+        return out
+
+
+def get_gender_classifier() -> GenderClassifier:
+    global _GENDERS
+    if _GENDERS is None:
+        _GENDERS = GenderClassifier()
+    return _GENDERS

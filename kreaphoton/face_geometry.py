@@ -36,6 +36,43 @@ def select_faces(boxes, confs, *, max_faces: int, min_face_px: int, threshold: f
     return [(i, box) for i, box, _ in kept[:int(max_faces)]]
 
 
+# Gender filter (2026-10-01): the node's `gender` input. 'any' = no filter (v1.8 behaviour).
+GENDERS = ("any", "female", "male")
+
+
+def box_iou(a, b) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return 0.0 if union <= 0.0 else float(inter / union)
+
+
+def match_genders(boxes, gendered, *, min_iou: float = 0.3):
+    """Gender verdict per detector box: the gender of the classifier face [(box, 'female' | 'male')]
+    that overlaps it best with IoU >= min_iou, else None (no verdict - the classifier missed that
+    face). Greedy by IoU, each classifier face used once, so two detector boxes cannot claim the
+    same person."""
+    pairs = sorted(((box_iou(b, g[0]), i, j) for i, b in enumerate(boxes) for j, g in enumerate(gendered)),
+                   reverse=True)
+    out, used = [None] * len(boxes), set()
+    for iou, i, j in pairs:
+        if iou < min_iou:
+            break
+        if out[i] is None and j not in used:
+            out[i] = gendered[j][1]
+            used.add(j)
+    return out
+
+
+def keep_gender(boxes, confs, genders, wanted: str):
+    """(boxes, confs) of the detections whose verdict is `wanted`; 'any' returns the inputs as they are."""
+    if wanted == "any":
+        return boxes, confs
+    kept = [k for k, g in enumerate(genders) if g == wanted]
+    return [boxes[k] for k in kept], [confs[k] for k in kept]
+
+
 def _clamp_axis(center: float, side: int, limit: int):
     """Place a segment of `side` (<= limit) centred at `center` inside [0, limit] by
     shifting it in. Returns (start, end)."""

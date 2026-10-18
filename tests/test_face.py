@@ -69,6 +69,22 @@ def test_select_faces(fg):
     assert fg.select_faces([], [], max_faces=1, min_face_px=20, threshold=0.45) == []
     print("  [2] select_faces: filter, sort, truncate ... ok")
 
+    # gender filter helpers (2026-10-01): detector boxes <- insightface verdicts by IoU
+    assert fg.GENDERS == ("any", "female", "male")
+    assert abs(fg.box_iou((0, 0, 10, 10), (5, 0, 15, 10)) - 50 / 150) < 1e-9
+    assert fg.box_iou((0, 0, 10, 10), (20, 20, 30, 30)) == 0.0
+    det = [(300, 100, 420, 240), (40, 40, 100, 100), (600, 50, 640, 90)]
+    ins = [((45, 42, 98, 104), "male"), ((305, 95, 425, 235), "female")]
+    assert fg.match_genders(det, ins) == ["female", "male", None]   # third box: no insightface face
+    # one insightface face cannot be claimed by two detector boxes (greedy by IoU)
+    assert fg.match_genders([(0, 0, 10, 10), (1, 0, 11, 10)], [((0, 0, 10, 10), "male")]) == ["male", None]
+    b2, c2 = fg.keep_gender(det, [0.9, 0.8, 0.7], ["female", "male", None], "male")
+    assert b2 == [det[1]] and c2 == [0.8], (b2, c2)
+    confs3 = [0.9, 0.8, 0.7]
+    b3, c3 = fg.keep_gender(det, confs3, ["female", "male", None], "any")
+    assert b3 is det and c3 is confs3, "'any' passes the detections through untouched"
+    print("  [2b] box_iou / match_genders / keep_gender ... ok")
+
 
 def test_crop_box(fg):
     # corner face: box shifted inside, aligned to 16, square
@@ -364,7 +380,8 @@ def test_node():
     assert list(it["required"]) == ["model", "positive", "image", "vae", "seed", "preset", "max_faces", "identity_boost"]
     assert it["required"]["identity_boost"][1]["default"] == 1.5
     assert list(it["optional"]) == ["negative", "face_positive", "reference_image", "upscale_model", "tune",
-                                    "ref_mean_guidance", "precision_profile"]
+                                    "ref_mean_guidance", "precision_profile", "gender"]
+    assert it["optional"]["gender"][0] == ["any", "female", "male"] and it["optional"]["gender"][1]["default"] == "any"
     print("  [7] node control flow with fakes ... ok")
 
 
@@ -401,6 +418,72 @@ def test_face_model():
     c, n = fdl.reference_embedding(G(), torch.zeros(3, 8, 8, 3))
     assert n == 2 and torch.allclose(c, torch.tensor([0.7071, 0.7071]), atol=1e-3), (c, n)
     print("  [8] build_face_model / reference_embedding ... ok")
+
+
+class _FakeGenders:
+    def __init__(self, faces, available=True):
+        self._faces = list(faces)
+        self.available = available
+        self.reason = "" if available else "fake genderage off"
+        self.calls = 0
+
+    def faces(self, img):
+        self.calls += 1
+        return list(self._faces)
+
+
+def test_gender_filter():
+    """gender input (2026-10-01): 'any' = v1.8 behaviour (classifier never called); 'female' / 'male'
+    keep only that gender's faces, then the usual largest-first max_faces selection; no such face or no
+    classifier -> image unchanged with the reason in the report (owner: never detail the wrong person)."""
+    import torch
+    fdl = importlib.import_module("kreaphoton.face_detailer")
+    lp = importlib.import_module("kreaphoton.lora_phase")
+    calls = []
+
+    def fake_run_sampling(model, positive, negative, latent_dict, sigmas, **kw):
+        calls.append(kw)
+        return {"samples": latent_dict["samples"] + 0.5}
+
+    big, small = (300, 100, 420, 240), (40, 40, 100, 100)
+    fdl._run_sampling = fake_run_sampling
+    fdl._build_phase_models = lambda model, loader=None, apply_lora=None: (None, model, None)
+    fdl._detect = lambda image, **kw: ([big, small], [0.9, 0.8])
+    fdl._upscale = lambda image, scale, upscale_model=None: torch.nn.functional.interpolate(
+        image.movedim(-1, 1), size=(int(round(image.shape[1] * scale)), int(round(image.shape[2] * scale))),
+        mode="bilinear").movedim(1, -1)
+    fdl._gate = lambda: _FakeGate([], available=False)
+    node = fdl.KreaPhotonFaceDetailer()
+    model = _FakeModel()
+    img = torch.rand(1, 512, 768, 3)
+
+    def region_changed(out, box):
+        x0, y0, x1, y1 = box
+        return not torch.equal(out[:, y0:y1, x0:x1], img[:, y0:y1, x0:x1])
+
+    genders = _FakeGenders([((45, 42, 98, 104), "male"), ((305, 95, 425, 235), "female")])
+    fdl._genders = lambda: genders
+    # 'any': the classifier is never asked, the largest face (the woman) is detailed as before
+    out, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, identity_boost=1.0)
+    assert genders.calls == 0 and region_changed(out, big) and not region_changed(out, small), report
+    # 'male': the smaller face is the only man -> it is detailed, the woman is untouched
+    out, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, identity_boost=1.0, gender="male")
+    assert region_changed(out, small) and not region_changed(out, big), report
+    assert "gender male: 1 of 2 detections" in report, report
+    # 'female' with max_faces 2: only one woman -> one face detailed
+    calls.clear()
+    out, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 2, identity_boost=1.0, gender="female")
+    assert region_changed(out, big) and not region_changed(out, small) and len(calls) == 1, (report, len(calls))
+    # no man in the frame -> unchanged, reason reported
+    genders._faces = [((305, 95, 425, 235), "female")]
+    out, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, identity_boost=1.0, gender="male")
+    assert torch.equal(out, img) and "no male face found - unchanged" in report, report
+    # classifier unavailable -> unchanged, reason reported
+    fdl._genders = lambda: _FakeGenders([], available=False)
+    out, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, identity_boost=1.0, gender="female")
+    assert torch.equal(out, img) and "fake genderage off" in report and "unchanged" in report, report
+    _raises(lambda: node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, gender="woman"), needle="gender")
+    print("  [11] gender filter: any / male / female / none found / no classifier ... ok")
 
 
 def test_phase_model_parents():
@@ -446,6 +529,7 @@ def main():
     test_node()
     test_face_model()
     test_phase_model_parents()
+    test_gender_filter()
     test_ref_mean()
     print("test_face: ALL PASSED")
 
