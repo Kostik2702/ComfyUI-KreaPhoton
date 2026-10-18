@@ -951,6 +951,7 @@ class KreaPhotonUpscale:
 from .upscale_v2 import KreaPhotonUpscaleV2  # noqa: E402  (imports nodes.py helpers lazily inside methods)
 from .face_detailer import KreaPhotonFaceDetailer  # noqa: E402  (same pattern)
 from .composition import KreaPhotonCompositionDrafts  # noqa: E402  (same pattern)
+from .grain import KreaPhotonFilmGrain  # noqa: E402  (pure torch, no nodes.py helpers)
 
 # Registration order = pipeline order: the node library lists sub-categories in the order their
 # first node registers (not alphabetically), so this order is what puts "1 Setup" first.
@@ -965,6 +966,7 @@ NODE_CLASS_MAPPINGS.update({
     "KreaPhotonUpscaleV2": KreaPhotonUpscaleV2,
     "KreaPhotonUpscale": KreaPhotonUpscale,
     "KreaPhotonFaceDetailer": KreaPhotonFaceDetailer,
+    "KreaPhotonFilmGrain": KreaPhotonFilmGrain,
     "KreaPhotonSaveImage": KreaPhotonSaveImage,
 })
 NODE_DISPLAY_NAME_MAPPINGS.update({
@@ -978,5 +980,6 @@ NODE_DISPLAY_NAME_MAPPINGS.update({
     "KreaPhotonUpscale": "KreaPhoton Upscale (classic)",
     "KreaPhotonUpscaleV2": "KreaPhoton Upscale v2",
     "KreaPhotonFaceDetailer": "KreaPhoton Face Detailer",
+    "KreaPhotonFilmGrain": "KreaPhoton Film Grain",
     "KreaPhotonCompositionDrafts": "KreaPhoton Composition Drafts",
 })

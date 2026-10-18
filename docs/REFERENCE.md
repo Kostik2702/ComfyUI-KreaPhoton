@@ -36,10 +36,11 @@ is labeled as such, in the README and in `presets.py`.
 | **KreaPhoton Upscale (classic)** | Faithful tiled ×1.25–×2.0 upscale with the same Krea 2 model: latent tiles re-blended every step (no seams), back-projection to the source (the downscaled result *is* the source), presets only, optional SR-model base. |
 | **KreaPhoton Upscale v2** | The same faithful refine plus empty-tile skipping, per-step grid shift and optional noise inversion; its own preset calibration (`polish` / `detail` / `strong`), shipped separately so v1 stays as calibrated. |
 | **KreaPhoton Face Detailer** | YOLO face detection → the `max_faces` largest faces redrawn at 1024 → 1536 px with the same sampler on the LoRA plan's texture model (identity LoRAs boosted ×1.5), ArcFace identity gate with keep-best retry, feathered paste. Presets `subtle` / `standard` / `strong`. |
+| **KreaPhoton Film Grain** | Last step before saving: fine photographic grain in 8-bit levels at middle grey (`amount`), grain `size` in px, neutral or colour, camera-like (`sensor`) or `flat` response. Dithers away 8-bit banding in smooth gradients; does not hide VAE blotches. |
 | **KreaPhoton Composition Drafts** | Pick the composition before paying for the image: N seeds × the first `draft_calls` model calls of the preset (default 2 — the subject's placement and framing are decided by the first two calls, within 2 % of the finished frame), x0 readout decoded into a labelled contact sheet, YOLO layout verifier (faces / persons / hands, subject third, shot type) against an optional JSON spec, `best_seed` out. The chosen seed reproduces bit-exactly in the Sampler. |
 
 Typical pipeline: `Empty Latent` + `Encode` → `LoRA Phase` (one per LoRA) → `Sampler` →
-`VAEDecode` → `Upscale v2` → `Face Detailer` → `Save Image`. Every IMAGE-stage node takes
+`VAEDecode` → `Upscale v2` → `Face Detailer` → (`Film Grain`) → `Save Image`. Every IMAGE-stage node takes
 the same `model` (with its plan) and `positive`.
 
 ### KreaPhoton Sampler
@@ -426,6 +427,30 @@ detector from `huggingface.co/Bingsu/adetailer`). `insightface` + `onnxruntime` 
 `models/insightface/models/buffalo_l/` are optional — without them the identity gate is OFF
 (one attempt per pass, the report says so). The gate runs on CPU: ≈1.2 s per embedding on a
 desktop CPU, i.e. ≈4 s for the usual one face / two passes / no retry.
+
+### KreaPhoton Film Grain
+
+The finishing grain / dither step: `out = clamp(image + amount/255 · w(Y) · n, 0, 1)`, on the
+first three channels (alpha untouched), image `b` of a batch with seed + `b`.
+
+| Widget | Default | Meaning |
+|---|---|---|
+| `amount` | 1.0 | rms of the grain in 8-bit levels at middle grey (sRGB 0.46 = 18 % linear). 0 passes the image through unchanged. |
+| `size` | 0.6 | sigma in px of the Gaussian that correlates the grain (rescaled to unit variance). 0 = per-pixel noise. |
+| `color` | 0.0 | 0 = the same grain in R, G, B (neutral, what retouchers use); `c` gives channel correlation 1 − c². |
+| `response` | sensor | `sensor`: shot + read noise, σ = √(x + 0.01²) in linear light carried through the sRGB curve — 1.25× at sRGB 0.03, 0.88× at 0.9 relative to middle grey; `flat`: the same everywhere. |
+
+Why and how much (vault: retouching and photo practice scan, 2026-10-18): an 8-bit gradient
+bands; noise of about half a level rms before quantization turns the staircase into an even
+gradient (triangular dither of ±1 level = 0.41 rms). Retouchers add grain last, at the final
+size, monochrome, and use it to tie retouched areas together. Real photos at 1–2 MP carry
+little noise (about 0.2 levels at base ISO, 1–2 at ISO 3200–6400), so the default is 1.0.
+Measured: on a dark 1024-px gradient the 8-bit result is up to 0.45 levels off the true
+gradient (the staircase) without grain and within 0.06 with 1.0 level; on a dark generation
+(L 3:2, candle in a dark room) the share of neighbouring flat-dark pixels with the identical
+8-bit value fell from 0.45 to 0.25. Grain does not hide the low-frequency colour blotches a
+VAE can leave in dark areas (20–200 px): those stay visible under it. Put the node after any
+upscale — grain added before a resize is averaged away.
 
 ### KreaPhoton Scheduler
 
@@ -877,6 +902,10 @@ Last run before 1.6.1 was tagged: `ALL 9 TEST FILES PASSED` on ComfyUI 0.30.1
 `ALL 10 TEST FILES PASSED`; iteration 2: `ALL 11 TEST FILES PASSED` (+ `test_trajectory`).
 
 ## Changelog
+
+**Unreleased**
+- New node KreaPhoton Film Grain (finishing): grain / dither before saving, `sensor` or `flat`
+  response, neutral or colour, deterministic per seed.
 
 **1.8.0 — Sampler v2 (experimental, opt-in)**
 - Iteration 1: `rf_2m` solver (DPM-Solver++(2M) in the rectified-flow form), `band` guidance mode,

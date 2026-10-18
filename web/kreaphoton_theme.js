@@ -39,6 +39,7 @@ export const FAMILY = {
     KreaPhotonUpscaleV2: "texture",
     KreaPhotonUpscale: "texture",
     KreaPhotonFaceDetailer: "texture",
+    KreaPhotonFilmGrain: "neutral",
     KreaPhotonSaveImage: "neutral",
 };
 

@@ -37,6 +37,7 @@ finishes the image.
 | **Upscale v2** | finishing | Tiled ×2 refine with the same model; back-projection keeps the result true to the source. |
 | **Upscale** | finishing | The original faithful upscaler, kept exactly as calibrated. |
 | **Face Detailer** | finishing | Finds faces, redraws them at 1024 → 1536 px, checks identity with ArcFace, retries on drift. |
+| **Film Grain** | finishing | Fine photographic grain as the last step: smooths 8-bit banding in gradients. |
 | **Save Image** | output | Folder picker, collision-free timestamped names, PNG / JPEG / WebP with metadata. |
 
 ```mermaid
