@@ -51,8 +51,10 @@ import torch
 import torch.nn.functional as F
 
 from . import face_detect
-from .face_geometry import choose_best, crop_box, face_mask, paste, place_mask, retry_schedule, select_faces
+from .face_geometry import (GENDERS, choose_best, crop_box, face_mask, keep_gender, match_genders, paste,
+                            place_mask, retry_schedule, select_faces)
 from .lora_phase import PLAN_KEY, build_face_model, build_phase_models
+from .precision import PRECISION_TOOLTIP, PROFILE_OPTIONS, resolve_node_profile
 from .presets import (DEFAULT_FACE_PRESET, FACE_COMMON, FACE_PRESETS, GUIDANCE, MANIFOLD_MEAN, MANIFOLD_STD,
                       preset_guidance, validate_face_presets)
 from .ref_mean import REF_MEAN_EXPERIMENTAL_BETA, RefMeanHook, build_reference_bank
@@ -77,6 +79,9 @@ _BOOST_TOOLTIP = ("Strength multiplier for the LoRA plan's identity LoRAs (phase
                   "gain; 1.8 = plateau. Needs a KreaPhoton LoRA Phase plan on model - a classic LoRA loader is "
                   "not touched (report says so).")
 _UPSCALE_MODEL_TOOLTIP = "Optional ESRGAN-class model to enlarge the crop before the pass (else lanczos)."
+_GENDER_TOOLTIP = ("Multi-person frames: detail only faces of this gender (insightface genderage, buffalo_l), largest "
+                   "first up to max_faces. any = every face, as before. When no face of that gender is found, or "
+                   "the classifier is unavailable, the image is left unchanged and the report says why.")
 _TUNE_TOOLTIP = ("Calibration override, leave EMPTY. JSON keys: crop_factor, bbox_threshold, min_face_px, "
                  "feather, dilation, retry_max, retry_denoise_step, retry_seed_step, sampler, guidance, "
                  "detail_a, invert (0/1), id_threshold, guide1/denoise1/steps1, guide2/denoise2/steps2 "
@@ -94,6 +99,7 @@ _REGRESS_MARGIN = 0.05        # with a reference: keep the original if the redra
 # seams (see the module docstring)
 _detect = face_detect.detect_faces
 _gate = face_detect.get_gate
+_genders = face_detect.get_gender_classifier
 _run_sampling = run_sampling
 _run_inversion = run_inversion
 _build_phase_models = build_phase_models
@@ -193,6 +199,8 @@ class KreaPhotonFaceDetailer:
                 "tune": ("STRING", {"default": "", "multiline": False, "tooltip": _TUNE_TOOLTIP}),
                 "ref_mean_guidance": ("BOOLEAN", {"default": False, "label_on": "experimental", "label_off": "off",
                                                   "tooltip": _REF_MEAN_TOOLTIP}),
+                "precision_profile": (PROFILE_OPTIONS, {"default": "auto", "tooltip": PRECISION_TOOLTIP}),
+                "gender": (list(GENDERS), {"default": "any", "tooltip": _GENDER_TOOLTIP}),
             },
         }
 
@@ -208,8 +216,11 @@ class KreaPhotonFaceDetailer:
     SEARCH_ALIASES = ["face fix", "face detailer", "face restore", "krea face"]
 
     def detail(self, model, positive, image, vae, seed, preset, max_faces, identity_boost=1.5, negative=None,
-               face_positive=None, reference_image=None, upscale_model=None, tune="", ref_mean_guidance=False):
+               face_positive=None, reference_image=None, upscale_model=None, tune="", ref_mean_guidance=False,
+               precision_profile="auto", gender="any"):
         from .nodes import LATENT_PX, ALIGN_PX, _ORDER_FROM_SAMPLER_NAME, _decode_tiled, _encode_tiled
+        if gender not in GENDERS:
+            raise ValueError(f"KreaPhoton Face Detailer: gender must be one of {list(GENDERS)}, got {gender!r}")
         passes, id_threshold, c = apply_tune_face(FACE_PRESETS[preset], FACE_COMMON, tune)
         if ref_mean_guidance and float(c["rm_beta"]) <= 0.0:
             c["rm_beta"] = REF_MEAN_EXPERIMENTAL_BETA     # the switch: tune rm_beta (if set) still wins
@@ -221,10 +232,14 @@ class KreaPhotonFaceDetailer:
         cond = face_positive if face_positive is not None else positive
         guidance_mode, flat_cfg = preset_guidance(c, negative is not None)
         plan = list((getattr(model, "model_options", None) or {}).get(PLAN_KEY, []))
-        boost = float(identity_boost)
+        profile_name, prof = resolve_node_profile(model, precision_profile)
+        boost = float(identity_boost) * prof["face_boost_scale"]
 
         gate = _gate()
         report = []
+        if prof["face_boost_scale"] != 1.0:
+            report.append("precision profile %s: identity boost x%.2f -> x%.2f"
+                          % (profile_name, float(identity_boost), boost))
         if gate.available:
             report.append("identity gate: ON (%s)" % face_detect.ARCFACE_PACK)
         else:
@@ -275,11 +290,30 @@ class KreaPhotonFaceDetailer:
             img = image[b:b + 1, ..., :3]
             H, W = int(img.shape[1]), int(img.shape[2])
             boxes, confs = _detect(img, threshold=min(0.25, float(c["bbox_threshold"])))
+            mask_out = torch.zeros((H, W), dtype=torch.float32)
+            if gender != "any":
+                # owner 2026-10-01: never detail the wrong person - no verdict / no such face -> unchanged
+                clf = _genders()
+                if not clf.available:
+                    report.append("image %d: gender filter '%s' needs insightface genderage (%s) - unchanged"
+                                  % (b, gender, clf.reason or "not available"))
+                    out_images.append(img)
+                    out_masks.append(mask_out)
+                    continue
+                verdicts = match_genders(boxes, clf.faces(img))
+                n_raw = len(boxes)
+                boxes, confs = keep_gender(boxes, confs, verdicts, gender)
+                report.append("image %d: gender %s: %d of %d detections (%d without a verdict)"
+                              % (b, gender, len(boxes), n_raw, verdicts.count(None)))
+                if not boxes:
+                    report.append("image %d: no %s face found - unchanged" % (b, gender))
+                    out_images.append(img)
+                    out_masks.append(mask_out)
+                    continue
             selected = select_faces(boxes, confs, max_faces=int(max_faces), min_face_px=int(c["min_face_px"]),
                                     threshold=float(c["bbox_threshold"]))
             eligible = len(select_faces(boxes, confs, max_faces=len(boxes) or 1, min_face_px=int(c["min_face_px"]),
                                         threshold=float(c["bbox_threshold"])))
-            mask_out = torch.zeros((H, W), dtype=torch.float32)
             if not selected:
                 report.append("image %d: no faces >= %d px at conf >= %.2f (%d raw detections) - unchanged"
                               % (b, int(c["min_face_px"]), float(c["bbox_threshold"]), len(boxes)))

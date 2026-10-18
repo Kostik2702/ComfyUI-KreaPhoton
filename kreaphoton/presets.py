@@ -318,6 +318,39 @@ LORA_PHASES = {
     "composition+identity": (1.00, 0.65),
 }
 
+# --- Precision profiles (2026-10-01, KREAPHOTON-FP16). Every value above was measured on int8
+#     ConvRot checkpoints. On int8 a LoRA is patched on the fly and the patched weight is
+#     RE-QUANTIZED to int8 (comfy/ops.py requantize_from_float), so part of a character LoRA's
+#     delta drowns in the quantization step; the Face Detailer's measured identity_boost 1.5
+#     (2026-09-16) compensates that on int8. A full-precision Turbo applies the delta exactly.
+#     A profile holds only RELATIVE corrections to the int8 calibration (scales) plus the
+#     composition -> identity boundary, so "int8" is the identity and int8 runs stay bit-exact.
+#     identity_lora_scale: x strength of identity-phase plan entries (Sampler phase models);
+#     face_boost_scale: x the Face Detailer's identity_boost; detail_a_scale: x the preset's
+#     detail_a (simple Sampler only); composition_end: the clean -> identity split sigma.
+#     "full" is UNCALIBRATED (a copy of int8) until docs/superpowers/plans/
+#     2026-10-01-full-precision-profile.md Tasks 9-12 measure it. ---
+PRECISION_PROFILE_KEYS = ("identity_lora_scale", "face_boost_scale", "detail_a_scale", "composition_end")
+PRECISION_PROFILES = {
+    "int8": {"identity_lora_scale": 1.0, "face_boost_scale": 1.0, "detail_a_scale": 1.0, "composition_end": 0.85},
+    "full": {"identity_lora_scale": 1.0, "face_boost_scale": 1.0, "detail_a_scale": 1.0, "composition_end": 0.85},
+}
+
+
+def validate_precision_profiles(profiles: dict = None):
+    profiles = PRECISION_PROFILES if profiles is None else profiles
+    for name, p in profiles.items():
+        missing = [k for k in PRECISION_PROFILE_KEYS if k not in p]
+        if missing:
+            raise ValueError(f"precision profile {name!r} is missing keys {missing}")
+        for k in ("identity_lora_scale", "face_boost_scale", "detail_a_scale"):
+            if not (0.0 < float(p[k]) <= 3.0):
+                raise ValueError(f"precision profile {name!r}: {k} must be in (0, 3], got {p[k]!r}")
+        if not (0.5 <= float(p["composition_end"]) <= 0.95):
+            raise ValueError(f"precision profile {name!r}: composition_end must be in [0.5, 0.95], "
+                             f"got {p['composition_end']!r}")
+    return True
+
 # --- Coherence (v1.4, Power-Nodes derived, simple-node combo `coherence`):
 #     jump  = one-time jump-back on the composition step at/below jump_sigma, strength
 #             0.19 == PN's 0.920 -> 0.935 boundary in our units (declared sigma =
@@ -606,3 +639,4 @@ validate_presets()
 validate_upscale_presets()
 validate_upscale_v2_presets()
 validate_face_presets()
+validate_precision_profiles()

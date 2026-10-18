@@ -57,6 +57,26 @@ def phase_sets(plan):
     return {seg: tuple(v) for seg, v in out.items()}
 
 
+_TRAINER_FLAGS = {"use_rslora_flag": "rsLoRA (alpha/sqrt(rank) scaling)", "use_dora_flag": "DoRA"}
+
+
+def strip_trainer_flags(lora: dict, name: str) -> dict:
+    """blissful-tuner stores two scalar flags in the state dict; ComfyUI maps only weights and
+    warns 'lora key not loaded' for each. Flag 0 = a plain LoRA, scaled exactly as ComfyUI
+    scales it (alpha / rank) -> drop the flags. Flag 1 = a scaling ComfyUI does not implement
+    (no rsLoRA support at all; DoRA only via dora_scale keys) -> refuse, a silent sqrt(rank)
+    weaker character LoRA is the worst failure for likeness (2026-10-01)."""
+    flags = [k for k in lora if k.rsplit(".", 1)[-1] in _TRAINER_FLAGS]
+    if not flags:
+        return lora
+    for k in flags:
+        if float(lora[k]) != 0.0:
+            raise ValueError(f"KreaPhoton LoRA Phase: {name} was trained with "
+                             f"{_TRAINER_FLAGS[k.rsplit('.', 1)[-1]]}, which ComfyUI does not apply - "
+                             f"the LoRA would act with the wrong strength")
+    return {k: v for k, v in lora.items() if k not in flags}
+
+
 def _default_loader(lora_name: str):
     import folder_paths
     import comfy.utils
@@ -66,7 +86,7 @@ def _default_loader(lora_name: str):
     key = (path, os.path.getmtime(path))
     lora = _LORA_CACHE.get(key)
     if lora is None:
-        lora = comfy.utils.load_torch_file(path, safe_load=True)
+        lora = strip_trainer_flags(comfy.utils.load_torch_file(path, safe_load=True), lora_name)
         if len(_LORA_CACHE) >= _LORA_CACHE_MAX:
             _LORA_CACHE.pop(next(iter(_LORA_CACHE)))
         _LORA_CACHE[key] = lora
@@ -83,18 +103,35 @@ def _default_apply(patcher, lora, strength: float):
     return patcher
 
 
-def build_phase_models(model, loader=_default_loader, apply_lora=_default_apply):
+def _plan_free_clone(model):
+    """A clone of `model` without the plan (clone() deep-copies model_options, so the
+    input keeps its plan)."""
+    p = model.clone()
+    p.model_options.pop(PLAN_KEY, None)
+    return p
+
+
+def build_phase_models(model, loader=_default_loader, apply_lora=_default_apply, identity_scale: float = 1.0):
     """(clean_model, model, texture_model) for the samplers.
 
     No plan -> (None, model, None): the model is used as is. With a plan the
     base is the model minus the plan; each distinct LoRA set becomes one
     patcher (shared when two segments need the same set, so a plan with only
-    an identity-phase LoRA yields no texture split and no extra re-patch)."""
+    an identity-phase LoRA yields no texture split and no extra re-patch).
+
+    Every patcher is a DIRECT clone of `model`, never a clone of a clone: when a
+    loaded patcher dies, comfy's LoadedModel re-points to its parent through ONE
+    weakref level; a two-level chain of throwaway clones freed by the cyclic GC
+    in one pass leaves the entry dead - 'memory leak with model Krea2', dead
+    entries piling up and a full gc.collect() per model load (2026-10-01,
+    research/precision/leak_mech.py).
+
+    identity_scale multiplies the strength of identity-phase entries (IDENTITY_PHASES) -
+    the precision profile's correction (presets.PRECISION_PROFILES); 1.0 = the plan as written."""
     plan = list((getattr(model, "model_options", None) or {}).get(PLAN_KEY, []))
     if not plan:
         return None, model, None
-    base = model.clone()
-    base.model_options.pop(PLAN_KEY, None)
+    base = _plan_free_clone(model)
     sets = phase_sets(plan)
     built = {}
 
@@ -102,10 +139,13 @@ def build_phase_models(model, loader=_default_loader, apply_lora=_default_apply)
         key = tuple(indices)
         if key in built:
             return built[key]
-        p = base if not key else base.clone()
+        p = base if not key else _plan_free_clone(model)
         for i in key:
             entry = plan[i]
-            p = apply_lora(p, loader(entry["lora_name"]), float(entry["strength"]))
+            strength = float(entry["strength"])
+            if entry["phase"] in IDENTITY_PHASES:
+                strength *= float(identity_scale)
+            p = apply_lora(p, loader(entry["lora_name"]), strength)
         built[key] = p
         return p
 

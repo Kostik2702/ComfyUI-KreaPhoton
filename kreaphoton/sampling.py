@@ -280,6 +280,22 @@ def variety_boundary_index(sigmas, variety_end: float):
     return None
 
 
+class NonFiniteModelOutput(RuntimeError):
+    """The diffusion model returned NaN/Inf. On Krea 2 the known cause is fp16 compute: fp16
+    weights run fp16 (comfy.model_management.unet_dtype) and comfy/ldm/krea2 has no overflow
+    clamp (2026-10-01). Stopping beats decoding a black / confetti frame."""
+
+
+def check_finite(den, sigma):
+    finite = torch.isfinite(den)
+    if not bool(finite.all()):
+        raise NonFiniteModelOutput(
+            "KreaPhoton: the model returned %d non-finite values at sigma %.4f. On Krea 2 this is "
+            "fp16 overflow - run the checkpoint in bf16 (start ComfyUI with --bf16-unet, or use a "
+            "bf16 copy of the file)." % (int((~finite).sum()), float(sigma)))
+    return den
+
+
 @torch.no_grad()
 def kreaphoton_sampler_loop(model, x, sigmas, extra_args=None, callback=None, disable=None,
                             detail_amount=0.0, detail_start=0.15, detail_end=0.95, detail_peak=0.6,
@@ -476,6 +492,7 @@ def kreaphoton_sampler_loop(model, x, sigmas, extra_args=None, callback=None, di
             den = tiler(model, xx, sig_model, extra_args)
         else:
             den = model(xx, sig_model * s_in, **extra_args)
+        den = check_finite(den, sig_true)
         if x0_hook is not None:
             den = x0_hook(den, sig_model)
         if ref_hook is not None:
@@ -795,6 +812,7 @@ def kreaphoton_invert_loop(model, x, sigmas, extra_args=None, callback=None, dis
             denoised = tiler(model, x, s_cur, extra_args)
         else:
             denoised = model(x, s_cur * s_in, **extra_args)
+        denoised = check_finite(denoised, s_cur)
         if x0_hook is not None:
             denoised = x0_hook(denoised, s_cur)
         if callback is not None:

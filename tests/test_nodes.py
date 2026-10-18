@@ -205,8 +205,48 @@ def main():
         node.sample("MODEL", pos, latent, 1001, "turbo/quality-v2", "off", preview_method="none", denoise=0.4)
         assert captured["eta0"] == 0.0 and captured["eta_tail"] is None, "refine path: no stochastic tail either"
         print("     solver / eta_tail threaded (Advanced -1 = off, rf_2m, band); every preset's own values")
+
+        # precision profile plumbing (2026-10-01): int8 / unknown model -> neutral profile,
+        # full -> profile values reach run_sampling
+        import kreaphoton.precision as precision_mod
+        real_detect = precision_mod.detect_precision
+        saved_full = dict(presets.PRECISION_PROFILES["full"])
+        try:
+            node.sample("MODEL", pos, latent, 1001, "turbo/balanced", "off", preview_method="none")
+            assert captured["composition_end"] == 0.85
+            assert captured["detail_amount"] == presets.PRESETS["turbo/balanced"]["detail_a"]
+            presets.PRECISION_PROFILES["full"].update(detail_a_scale=0.5, composition_end=0.80)
+            precision_mod.detect_precision = lambda m: precision_mod.PrecisionInfo("bf16", 0.0, "torch.bfloat16")
+            node.sample("MODEL", pos, latent, 1001, "turbo/balanced", "off", preview_method="none")
+            assert captured["composition_end"] == 0.80
+            assert captured["detail_amount"] == presets.PRESETS["turbo/balanced"]["detail_a"] * 0.5
+            node.sample("MODEL", pos, latent, 1001, "turbo/balanced", "off", preview_method="none",
+                        precision_profile="int8")
+            assert captured["composition_end"] == 0.85, "override int8 wins over detected bf16"
+        finally:
+            precision_mod.detect_precision = real_detect
+            presets.PRECISION_PROFILES["full"].clear()
+            presets.PRECISION_PROFILES["full"].update(saved_full)
+        print("     precision profile: unknown -> int8 neutral, bf16 -> full values, override wins")
     finally:
         nodes.run_sampling = real_run_sampling
+
+    # explicit phase input expanded with the profile's identity scale (2026-10-01)
+    seen = []
+    real_build = nodes.build_phase_models
+
+    def spy_build(m, identity_scale=1.0, **kw):
+        seen.append(identity_scale)
+        return None, m, None
+
+    nodes.build_phase_models = spy_build
+    try:
+        assert nodes._explicit_phase_model("EXPLICIT", "PLAN", "texture", 1.25) == "EXPLICIT"
+        assert nodes._explicit_phase_model(None, "PLAN", "texture", 1.25) == "PLAN"
+        assert seen == [1.25], seen
+    finally:
+        nodes.build_phase_models = real_build
+    print("     explicit clean/texture input expanded with the profile identity scale")
 
     # --- (4) INPUT_TYPES backward compatibility ---
     print("[4] INPUT_TYPES backward compatibility vs v1.2.0")
@@ -343,7 +383,7 @@ def main():
     assert tail == ["x0_extrapolation", "guidance_rescale", "pag_scale", "pag_lo", "pag_hi", "pag_blocks",
                     "restart_enhance", "texture_model", "texture_start", "coherence_jump", "coherence_jump_sigma",
                     "eta_tail", "guidance_sigma", "detail_space", "detail_sigma_hi", "detail_sigma_peak",
-                    "detail_sigma_lo", "x0_extrap_order", "x0_trust", "pc", "refine_mode"], tail
+                    "detail_sigma_lo", "x0_extrap_order", "x0_trust", "pc", "refine_mode", "precision_profile"], tail
     assert a_it["optional"]["eta_tail"][1]["default"] == -1.0
     opt = a_it["optional"]
     assert (opt["guidance_sigma"][0], opt["detail_space"][0], opt["pc"][0], opt["refine_mode"][0]) == \
@@ -359,7 +399,10 @@ def main():
     assert a_it["required"]["guidance_mode"][0] == ["off", "flat", "window", "band"]
     assert a_it["required"]["sampler_order"][0] == ["euler", "euler_2m", "rf_2m"]
     s_it = nodes.KreaPhotonSampler.INPUT_TYPES()
-    assert list(s_it["optional"].keys())[len(V12_SAMPLER_OPTIONAL):] == ["restart_enhance", "texture_model", "coherence"]
+    assert list(s_it["optional"].keys())[len(V12_SAMPLER_OPTIONAL):] == ["restart_enhance", "texture_model", "coherence",
+                                                                        "precision_profile"]
+    assert s_it["optional"]["precision_profile"][0] == ["auto", "int8", "full"]
+    assert s_it["optional"]["precision_profile"][1]["default"] == "auto"
     assert s_it["optional"]["restart_enhance"][0][0] == "off"
     assert s_it["optional"]["coherence"][0] == presets.COHERENCE_OPTIONS and s_it["optional"]["coherence"][1]["default"] == "off"
     print("[8] new optional inputs appended after the v1.2 ones (simple: +3; Advanced: +21; Scheduler: +2)")
@@ -427,7 +470,8 @@ def main():
     print("[9] simple node expands the LoRA plan into clean/model/texture")
     real_build = nodes.build_phase_models
 
-    def fake_build(model):
+    def fake_build(model, identity_scale=1.0):
+        assert identity_scale == 1.0, "an unclassifiable model runs the neutral int8 profile"
         if isinstance(model, dict) and model.get("plan"):
             tag = model.get("tag", "")
             if model.get("shared"):          # every phase set identical -> one patcher
@@ -767,7 +811,7 @@ def main():
     assert list(it3["required"].keys()) == ["model", "positive", "image", "vae", "seed", "preset", "max_faces",
                                             "identity_boost"]
     assert list(it3["optional"].keys()) == ["negative", "face_positive", "reference_image", "upscale_model", "tune",
-                                            "ref_mean_guidance"]
+                                            "ref_mean_guidance", "precision_profile", "gender"]
     assert it3["optional"]["ref_mean_guidance"][0] == "BOOLEAN" and it3["optional"]["ref_mean_guidance"][1]["default"] is False
     assert it3["required"]["preset"][1]["default"] == presets.DEFAULT_FACE_PRESET
     assert it3["required"]["max_faces"][1]["min"] == 1 and it3["required"]["max_faces"][1]["max"] == 8

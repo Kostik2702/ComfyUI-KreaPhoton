@@ -14,8 +14,10 @@ from .presets import (ANCHOR, COHERENCE, COHERENCE_OPTIONS, DEFAULT_PRESET, DEFA
 from .enhance import make_dlss_restart_hook
 from .lora_phase import add_to_plan, build_phase_models
 from .noise import slerp_noise
+from .precision import PRECISION_TOOLTIP, PROFILE_OPTIONS, resolve_node_profile
 from .sampling import run_sampling
 from .save import KreaPhotonSaveImage
+from . import think as think_block
 from .schedules import (ALPHA, PLUNGE_SIGMA_FLOOR, SHIFT, SOFT_PLUNGE_MAX, alpha_for_latent, build_schedule,
                         refine_schedule)
 from .tiling import LatentTiler, LFAnchor
@@ -188,7 +190,7 @@ def _result_with_preview(out, vae):
     return {"ui": ui, "result": (out,)}
 
 
-def _explicit_phase_model(explicit, plan_model, phase):
+def _explicit_phase_model(explicit, plan_model, phase, identity_scale=1.0):
     """Phase model for the composition ("clean") or texture slot.
 
     An explicitly connected clean_model / texture_model wins over the plan on
@@ -201,7 +203,7 @@ def _explicit_phase_model(explicit, plan_model, phase):
     the identity LoRA set (no split). A plan-less input is returned unchanged."""
     if explicit is None:
         return plan_model
-    clean, identity, texture = build_phase_models(explicit)
+    clean, identity, texture = build_phase_models(explicit, identity_scale=identity_scale)
     own = clean if phase == "composition" else texture
     return own if own is not None else identity
 
@@ -242,6 +244,7 @@ class KreaPhotonSampler:
                                                               "tooltip": _RESTART_ENHANCE_TOOLTIP}),
                 "texture_model": ("MODEL", {"tooltip": _TEXTURE_MODEL_TOOLTIP}),
                 "coherence": (COHERENCE_OPTIONS, {"default": "off", "tooltip": _COHERENCE_TOOLTIP}),
+                "precision_profile": (PROFILE_OPTIONS, {"default": "auto", "tooltip": PRECISION_TOOLTIP}),
             },
         }
 
@@ -255,7 +258,8 @@ class KreaPhotonSampler:
 
     def sample(self, model, positive, latent_image, seed, preset, variety,
               preview_method="auto", denoise=1.0, negative=None, clean_model=None, vae=None,
-              seed_b=-1, blend=0.0, restart_enhance="off", texture_model=None, coherence="off"):
+              seed_b=-1, blend=0.0, restart_enhance="off", texture_model=None, coherence="off",
+              precision_profile="auto"):
         p = PRESETS[preset]
         a_latent, a_cond = VARIETY_LEVELS[variety]
         alpha = _preset_alpha(p, latent_image)
@@ -267,10 +271,13 @@ class KreaPhotonSampler:
         refine_steps = COHERENCE["refine_steps"] if (explicit_refine or preset_refine_auto) else 0
         refine_mode = "auto" if (preset_refine_auto and not explicit_refine) else "on"
         # LoRA phase plan (KreaPhoton LoRA Phase nodes upstream) -> phase models;
-        # explicitly connected clean_model / texture_model win for their phase
-        plan_clean, model, plan_texture = build_phase_models(model)
-        clean_model = _explicit_phase_model(clean_model, plan_clean, "composition")
-        texture_model = _explicit_phase_model(texture_model, plan_texture, "texture")
+        # explicitly connected clean_model / texture_model win for their phase.
+        # The precision profile (int8 = identity) scales identity-phase LoRAs / detail
+        # and sets the composition -> identity boundary.
+        _, prof = resolve_node_profile(model, precision_profile)
+        plan_clean, model, plan_texture = build_phase_models(model, identity_scale=prof["identity_lora_scale"])
+        clean_model = _explicit_phase_model(clean_model, plan_clean, "composition", prof["identity_lora_scale"])
+        texture_model = _explicit_phase_model(texture_model, plan_texture, "texture", prof["identity_lora_scale"])
         if denoise < 1.0:
             # refine / img2img: partial clean descent on the input latent (feed a
             # VAE-encoded image into latent_image). Fresh partial noise; restart/
@@ -305,7 +312,7 @@ class KreaPhotonSampler:
                 noise=noise,
                 contraction=p["contraction"], per_channel_contraction=False,
                 manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
-                detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
+                detail_amount=p["detail_a"] * prof["detail_a_scale"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
                 solver=p["sampler"], eta_tail=p.get("eta_tail") if denoise >= 1.0 else None,
                 pc=p.get("pc", "off") if denoise >= 1.0 else "off",
                 refine_mode=refine_mode if denoise >= 1.0 else "on",
@@ -313,7 +320,7 @@ class KreaPhotonSampler:
                 x0_extrap_order=p.get("x0_extrap_order", 1), x0_trust=p.get("x0_trust", 0.0),
                 eta0=eta0, sigma_gate=p["sigma_gate"],
                 x0_extrapolation=p["x0_extrapolation"],
-                clean_model=clean_model, composition_end=0.85,
+                clean_model=clean_model, composition_end=prof["composition_end"],
                 variety_a_latent=a_latent, variety_a_cond=a_cond, variety_seed=seed,
                 variety_end=VARIETY_END, variety_cond_taps=VARIETY_COND_TAPS,
                 restart_hook=restart_hook, texture_model=texture_model,
@@ -428,6 +435,7 @@ class KreaPhotonSamplerAdvanced:
                                        "tooltip": _X0_TRUST_TOOLTIP}),
                 "pc": (["off", "selective", "auto"], {"default": "off", "tooltip": _PC_TOOLTIP}),
                 "refine_mode": (["on", "auto"], {"default": "on", "tooltip": _REFINE_MODE_TOOLTIP}),
+                "precision_profile": (PROFILE_OPTIONS, {"default": "auto", "tooltip": PRECISION_TOOLTIP}),
             },
         }
 
@@ -450,11 +458,13 @@ class KreaPhotonSamplerAdvanced:
               coherence_jump=0.0, coherence_jump_sigma=COHERENCE["jump_sigma"], eta_tail=-1.0,
               guidance_sigma="model", detail_space="step", detail_sigma_hi=DETAIL_SIGMA[0],
               detail_sigma_peak=DETAIL_SIGMA[1], detail_sigma_lo=DETAIL_SIGMA[2], x0_extrap_order=1,
-              x0_trust=0.0, pc="off", refine_mode="on"):
+              x0_trust=0.0, pc="off", refine_mode="on", precision_profile="auto"):
         v_seed = seed if variety_seed < 0 else int(variety_seed)
-        plan_clean, model, plan_texture = build_phase_models(model)
-        clean_model = _explicit_phase_model(clean_model, plan_clean, "composition")
-        texture_model = _explicit_phase_model(texture_model, plan_texture, "texture")
+        # precision profile: only the identity-LoRA scale - the numeric widgets run as typed
+        _, prof = resolve_node_profile(model, precision_profile)
+        plan_clean, model, plan_texture = build_phase_models(model, identity_scale=prof["identity_lora_scale"])
+        clean_model = _explicit_phase_model(clean_model, plan_clean, "composition", prof["identity_lora_scale"])
+        texture_model = _explicit_phase_model(texture_model, plan_texture, "texture", prof["identity_lora_scale"])
         noise = _blend_noise(model, latent_image, seed, seed_b, blend)
         restart_hook = _restart_hook_for(restart_enhance, vae)
         with _live_preview(preview_method):
@@ -602,13 +612,24 @@ _STYLE_TOOLTIP = ("Aesthetic directive prepended to the prompt (krea2 responds s
 _CUSTOM_DIRECTIVE_TOOLTIP = ("Your own leading style directive (used only when style=custom). "
                              "Use mood/quality adjectives, NOT media nouns - 'magazine cover' / "
                              "'snapshot' render as literal text/frames in the image.")
+_THINK_TOOLTIP = ("EXPERIMENTAL: layout requirements in an assistant <think> turn of the Qwen "
+                  "template. off = stock encode (unchanged). manual = the think_text below. auto = "
+                  "the loaded Qwen restates the layout facts the prompt states (greedy, re-run only "
+                  "when the prompt changes); sentences with negations, a count or a position / shot "
+                  "word the prompt does not give are dropped; think_text is appended. Measured: acts like the same "
+                  "sentence added to the prompt; followed literally - it changes shot scale and "
+                  "makes seeds more alike. See the `think` output for the text used.")
+_THINK_TEXT_TOOLTIP = ("Layout requirements for think=manual, or additions after the auto plan. "
+                       "Short positive English sentences: how many, who is where (left / right / "
+                       "front / behind), whose hand holds what, shot size. No negations.")
 
 
 class KreaPhotonEncode:
     """krea2-native text encode with an aesthetic style directive. Feeds the prompt
     through the correct KREA2_TEMPLATE path (plain clip.tokenize, unlike
     CLIPTextEncodeLumina2 which injects a foreign Lumina2 system prefix), optionally
-    prepending a calibrated style directive (KREA2-NODES prefix-sweep)."""
+    prepending a calibrated style directive (KREA2-NODES prefix-sweep) and an optional
+    assistant think block with layout requirements (think.py)."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -622,25 +643,45 @@ class KreaPhotonEncode:
             "optional": {
                 "custom_directive": ("STRING", {"default": "", "multiline": True,
                                                 "tooltip": _CUSTOM_DIRECTIVE_TOOLTIP}),
+                "think": (list(think_block.THINK_MODES), {"default": "off", "tooltip": _THINK_TOOLTIP}),
+                "think_text": ("STRING", {"default": "", "multiline": True, "tooltip": _THINK_TEXT_TOOLTIP}),
             },
         }
 
-    RETURN_TYPES = ("CONDITIONING",)
-    OUTPUT_TOOLTIPS = ("Krea 2 conditioning for the prompt, with the style directive in front of it.",)
+    RETURN_TYPES = ("CONDITIONING", "STRING")
+    RETURN_NAMES = ("CONDITIONING", "think")
+    OUTPUT_TOOLTIPS = ("Krea 2 conditioning for the prompt, with the style directive in front of it.",
+                       "The layout think block that was used (empty when think is off or nothing was kept).")
     FUNCTION = "encode"
     CATEGORY = CAT_SETUP
-    DESCRIPTION = "Krea 2 text encode with an optional style directive in front of the prompt."
+    DESCRIPTION = ("Krea 2 text encode with an optional style directive in front of the prompt and an optional "
+                   "layout think block.")
     SEARCH_ALIASES = ["krea encode", "krea2 text encode", "prompt", "style directive"]
 
-    def encode(self, clip, text, style, custom_directive=""):
+    def encode(self, clip, text, style, custom_directive="", think="off", think_text=""):
         if style == "custom":
             directive = custom_directive.strip()
             if directive and not directive.endswith((" ", ",", ".", ":", ";")):
                 directive += ", "
         else:
             directive = STYLE_DIRECTIVES.get(style) or ""
-        tokens = clip.tokenize(directive + text)
-        return (clip.encode_from_tokens_scheduled(tokens),)
+        full = directive + text
+        content = ""
+        if think != "off":
+            if think_block.is_raw_template(full):
+                print("[KreaPhoton Encode] think ignored: the prompt is already a raw <|im_start|> template")
+            else:
+                plan, dropped = think_block.generate_plan(clip, text) if think == "auto" else ("", [])
+                content = think_block.compose_think(think, think_text, plan)
+                if dropped:
+                    print("[KreaPhoton Encode] think=auto: dropped from the plan: " + " | ".join(dropped))
+                if think == "auto" and not plan:
+                    print("[KreaPhoton Encode] think=auto: no layout plan (empty generation or every sentence dropped)")
+        if content:
+            tokens = clip.tokenize(full, llama_template=think_block.think_template(content))
+        else:
+            tokens = clip.tokenize(full)
+        return (clip.encode_from_tokens_scheduled(tokens), content)
 
 
 class KreaPhotonLoraPhase:

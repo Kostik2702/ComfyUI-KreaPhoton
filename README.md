@@ -31,7 +31,7 @@ finishes the image.
 | **Sampler (Advanced)** | sampling | The same loop with a SIGMAS input and every knob: detail envelope, gated eta, guidance policy, solver, predictor-corrector. |
 | **Scheduler** | sampling | The analytic σ schedule: structure descent, plunge, restart jump, texture tail, optional self-refine pass. |
 | **Empty Latent** | setup | Photo aspect ratios in four megapixel tiers for the 16-channel Krea 2 latent. |
-| **Encode** | setup | Krea 2 native text encode with an optional calibrated style directive. |
+| **Encode** | setup | Krea 2 native text encode with an optional calibrated style directive and an optional layout `think` block (manual / auto). |
 | **LoRA Phase** | setup | Puts a LoRA on one phase of the trajectory: composition, identity or texture. Works on int8 and fp8 checkpoints. |
 | **Composition Drafts** | preview | The first two model calls of several seeds as a contact sheet, a layout score, the best seed. |
 | **Upscale v2** | finishing | Tiled ×2 refine with the same model; back-projection keeps the result true to the source. |

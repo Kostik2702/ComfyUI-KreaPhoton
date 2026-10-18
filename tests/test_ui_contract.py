@@ -22,7 +22,8 @@ from test_nodes import _load_kreaphoton_package  # noqa: E402
 FROZEN_INPUTS = {
     "KreaPhotonSampler": (
         ["model", "positive", "latent_image", "seed", "preset", "variety", "preview_method", "denoise"],
-        ["negative", "clean_model", "vae", "seed_b", "blend", "restart_enhance", "texture_model", "coherence"]),
+        ["negative", "clean_model", "vae", "seed_b", "blend", "restart_enhance", "texture_model", "coherence",
+         "precision_profile"]),
     "KreaPhotonSamplerAdvanced": (
         ["model", "positive", "latent_image", "sigmas", "seed", "sampler_order", "detail_amount", "detail_start",
          "detail_end", "detail_peak", "eta0", "sigma_gate", "contraction", "per_channel_contraction",
@@ -32,12 +33,12 @@ FROZEN_INPUTS = {
          "x0_extrapolation", "guidance_rescale", "pag_scale", "pag_lo", "pag_hi", "pag_blocks", "restart_enhance",
          "texture_model", "texture_start", "coherence_jump", "coherence_jump_sigma", "eta_tail", "guidance_sigma",
          "detail_space", "detail_sigma_hi", "detail_sigma_peak", "detail_sigma_lo", "x0_extrap_order", "x0_trust",
-         "pc", "refine_mode"]),
+         "pc", "refine_mode", "precision_profile"]),
     "KreaPhotonScheduler": (
         ["steps", "alpha", "restart_frac", "sigma_r", "plunge"],
         ["latent", "refine_steps", "refine_sigma", "plunge_sigma", "soft_plunge"]),
     "KreaPhotonEmptyLatent": (["size", "aspect", "batch_size"], []),
-    "KreaPhotonEncode": (["clip", "text", "style"], ["custom_directive"]),
+    "KreaPhotonEncode": (["clip", "text", "style"], ["custom_directive", "think", "think_text"]),
     "KreaPhotonSaveImage": (["images", "folder_path", "filename_prefix", "format", "quality", "save_metadata"], []),
     "KreaPhotonLoraPhase": (["model", "lora_name", "strength", "phase"], []),
     "KreaPhotonUpscale": (
@@ -48,7 +49,8 @@ FROZEN_INPUTS = {
         ["negative", "upscale_model", "tune"]),
     "KreaPhotonFaceDetailer": (
         ["model", "positive", "image", "vae", "seed", "preset", "max_faces", "identity_boost"],
-        ["negative", "face_positive", "reference_image", "upscale_model", "tune", "ref_mean_guidance"]),
+        ["negative", "face_positive", "reference_image", "upscale_model", "tune", "ref_mean_guidance",
+         "precision_profile", "gender"]),
     "KreaPhotonCompositionDrafts": (
         ["model", "positive", "latent_image", "vae", "seed", "preset", "n_drafts", "draft_calls", "seed_step",
          "variety"],
@@ -127,7 +129,8 @@ def main():
     class Appended:
         @staticmethod
         def INPUT_TYPES():
-            return {"required": {"clip": 0, "text": 0, "style": 0}, "optional": {"custom_directive": 0, "new": 0}}
+            return {"required": {"clip": 0, "text": 0, "style": 0},
+                    "optional": {"custom_directive": 0, "think": 0, "think_text": 0, "new": 0}}
 
     for bad in (Swapped, Inserted):
         try:

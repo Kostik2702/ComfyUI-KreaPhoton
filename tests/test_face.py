@@ -69,6 +69,22 @@ def test_select_faces(fg):
     assert fg.select_faces([], [], max_faces=1, min_face_px=20, threshold=0.45) == []
     print("  [2] select_faces: filter, sort, truncate ... ok")
 
+    # gender filter helpers (2026-10-01): detector boxes <- insightface verdicts by IoU
+    assert fg.GENDERS == ("any", "female", "male")
+    assert abs(fg.box_iou((0, 0, 10, 10), (5, 0, 15, 10)) - 50 / 150) < 1e-9
+    assert fg.box_iou((0, 0, 10, 10), (20, 20, 30, 30)) == 0.0
+    det = [(300, 100, 420, 240), (40, 40, 100, 100), (600, 50, 640, 90)]
+    ins = [((45, 42, 98, 104), "male"), ((305, 95, 425, 235), "female")]
+    assert fg.match_genders(det, ins) == ["female", "male", None]   # third box: no insightface face
+    # one insightface face cannot be claimed by two detector boxes (greedy by IoU)
+    assert fg.match_genders([(0, 0, 10, 10), (1, 0, 11, 10)], [((0, 0, 10, 10), "male")]) == ["male", None]
+    b2, c2 = fg.keep_gender(det, [0.9, 0.8, 0.7], ["female", "male", None], "male")
+    assert b2 == [det[1]] and c2 == [0.8], (b2, c2)
+    confs3 = [0.9, 0.8, 0.7]
+    b3, c3 = fg.keep_gender(det, confs3, ["female", "male", None], "any")
+    assert b3 is det and c3 is confs3, "'any' passes the detections through untouched"
+    print("  [2b] box_iou / match_genders / keep_gender ... ok")
+
 
 def test_crop_box(fg):
     # corner face: box shifted inside, aligned to 16, square
@@ -254,6 +270,17 @@ def test_node():
     _, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "standard", 1, identity_boost=1.0)
     assert face_builds == [] and all(c["model"].name == "texture" for c in calls), (face_builds, [c["model"].name for c in calls])
     assert "identity boost" not in report, report
+    # precision profile (2026-10-01): the face boost is scaled by the profile's face_boost_scale
+    real_profile = fdl.resolve_node_profile
+    fdl.resolve_node_profile = lambda m, override: ("full", {"identity_lora_scale": 1.0, "face_boost_scale": 0.8,
+                                                             "detail_a_scale": 1.0, "composition_end": 0.85})
+    try:
+        calls.clear(); face_builds.clear()
+        _, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "standard", 1)
+        assert [round(b, 6) for b in face_builds] == [1.2], face_builds
+        assert "precision profile full: identity boost x1.50 -> x1.20" in report, report
+    finally:
+        fdl.resolve_node_profile = real_profile
     # no plan + boost -> raw model, report says the boost was ignored
     calls.clear()
     _, _, report = node.detail(_FakeModel(name="raw"), "pos", img, _FakeVAE(), 5, "subtle", 1)
@@ -353,7 +380,8 @@ def test_node():
     assert list(it["required"]) == ["model", "positive", "image", "vae", "seed", "preset", "max_faces", "identity_boost"]
     assert it["required"]["identity_boost"][1]["default"] == 1.5
     assert list(it["optional"]) == ["negative", "face_positive", "reference_image", "upscale_model", "tune",
-                                    "ref_mean_guidance"]
+                                    "ref_mean_guidance", "precision_profile", "gender"]
+    assert it["optional"]["gender"][0] == ["any", "female", "male"] and it["optional"]["gender"][1]["default"] == "any"
     print("  [7] node control flow with fakes ... ok")
 
 
@@ -392,6 +420,103 @@ def test_face_model():
     print("  [8] build_face_model / reference_embedding ... ok")
 
 
+class _FakeGenders:
+    def __init__(self, faces, available=True):
+        self._faces = list(faces)
+        self.available = available
+        self.reason = "" if available else "fake genderage off"
+        self.calls = 0
+
+    def faces(self, img):
+        self.calls += 1
+        return list(self._faces)
+
+
+def test_gender_filter():
+    """gender input (2026-10-01): 'any' = v1.8 behaviour (classifier never called); 'female' / 'male'
+    keep only that gender's faces, then the usual largest-first max_faces selection; no such face or no
+    classifier -> image unchanged with the reason in the report (owner: never detail the wrong person)."""
+    import torch
+    fdl = importlib.import_module("kreaphoton.face_detailer")
+    lp = importlib.import_module("kreaphoton.lora_phase")
+    calls = []
+
+    def fake_run_sampling(model, positive, negative, latent_dict, sigmas, **kw):
+        calls.append(kw)
+        return {"samples": latent_dict["samples"] + 0.5}
+
+    big, small = (300, 100, 420, 240), (40, 40, 100, 100)
+    fdl._run_sampling = fake_run_sampling
+    fdl._build_phase_models = lambda model, loader=None, apply_lora=None: (None, model, None)
+    fdl._detect = lambda image, **kw: ([big, small], [0.9, 0.8])
+    fdl._upscale = lambda image, scale, upscale_model=None: torch.nn.functional.interpolate(
+        image.movedim(-1, 1), size=(int(round(image.shape[1] * scale)), int(round(image.shape[2] * scale))),
+        mode="bilinear").movedim(1, -1)
+    fdl._gate = lambda: _FakeGate([], available=False)
+    node = fdl.KreaPhotonFaceDetailer()
+    model = _FakeModel()
+    img = torch.rand(1, 512, 768, 3)
+
+    def region_changed(out, box):
+        x0, y0, x1, y1 = box
+        return not torch.equal(out[:, y0:y1, x0:x1], img[:, y0:y1, x0:x1])
+
+    genders = _FakeGenders([((45, 42, 98, 104), "male"), ((305, 95, 425, 235), "female")])
+    fdl._genders = lambda: genders
+    # 'any': the classifier is never asked, the largest face (the woman) is detailed as before
+    out, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, identity_boost=1.0)
+    assert genders.calls == 0 and region_changed(out, big) and not region_changed(out, small), report
+    # 'male': the smaller face is the only man -> it is detailed, the woman is untouched
+    out, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, identity_boost=1.0, gender="male")
+    assert region_changed(out, small) and not region_changed(out, big), report
+    assert "gender male: 1 of 2 detections" in report, report
+    # 'female' with max_faces 2: only one woman -> one face detailed
+    calls.clear()
+    out, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 2, identity_boost=1.0, gender="female")
+    assert region_changed(out, big) and not region_changed(out, small) and len(calls) == 1, (report, len(calls))
+    # no man in the frame -> unchanged, reason reported
+    genders._faces = [((305, 95, 425, 235), "female")]
+    out, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, identity_boost=1.0, gender="male")
+    assert torch.equal(out, img) and "no male face found - unchanged" in report, report
+    # classifier unavailable -> unchanged, reason reported
+    fdl._genders = lambda: _FakeGenders([], available=False)
+    out, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, identity_boost=1.0, gender="female")
+    assert torch.equal(out, img) and "fake genderage off" in report and "unchanged" in report, report
+    _raises(lambda: node.detail(model, "pos", img, _FakeVAE(), 5, "subtle", 1, gender="woman"), needle="gender")
+    print("  [11] gender filter: any / male / female / none found / no classifier ... ok")
+
+
+def test_phase_model_parents():
+    """Every patcher build_phase_models / build_face_model hands out is a DIRECT clone of the
+    input model (2026-10-01, 'memory leak with model Krea2'): when a loaded patcher dies, comfy's
+    LoadedModel follows ONE weakref parent level (model_management._switch_parent). A clone of a
+    clone collected by the cyclic GC together with its parent breaks that switch and leaves a dead
+    LoadedModel entry; research/precision/leak_mech.py reproduces it with the real comfy classes."""
+    lp = importlib.import_module("kreaphoton.lora_phase")
+
+    class _ParentModel(_FakeModel):
+        def __init__(self, model_options=None, parent=None):
+            super().__init__(model_options)
+            self.parent = parent
+
+        def clone(self):
+            import copy
+            return _ParentModel(copy.deepcopy(self.model_options), parent=self)
+
+    plan = [{"lora_name": "char", "strength": 1.0, "phase": "identity"},
+            {"lora_name": "layout", "strength": 0.4, "phase": "composition"},
+            {"lora_name": "style", "strength": 0.4, "phase": "texture"}]
+    m = _ParentModel({lp.PLAN_KEY: plan})
+    clean, ident, tex = lp.build_phase_models(m, loader=lambda n: n, apply_lora=lambda p, lora, s: p)
+    for name, p in (("clean", clean), ("identity", ident), ("texture", tex)):
+        assert p is not None and p.parent is m, (name, p and p.parent)
+        assert lp.PLAN_KEY not in p.model_options, name
+    assert lp.PLAN_KEY in m.model_options, "the input model keeps its plan"
+    face, _, _ = lp.build_face_model(m, 1.5, loader=lambda n: n, apply_lora=lambda p, lora, s: p)
+    assert face.parent is m
+    print("  [10] phase / face patchers are direct clones of the input ... ok")
+
+
 def main():
     fg, presets = _load_kreaphoton_package()
     print("test_face:")
@@ -403,6 +528,8 @@ def main():
     test_detect_helpers()
     test_node()
     test_face_model()
+    test_phase_model_parents()
+    test_gender_filter()
     test_ref_mean()
     print("test_face: ALL PASSED")
 
