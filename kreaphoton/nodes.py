@@ -14,6 +14,7 @@ from .presets import (ANCHOR, COHERENCE, COHERENCE_OPTIONS, DEFAULT_PRESET, DEFA
 from .enhance import make_dlss_restart_hook
 from .lora_phase import add_to_plan, build_phase_models
 from .noise import slerp_noise
+from .precision import PRECISION_TOOLTIP, PROFILE_OPTIONS, resolve_node_profile
 from .sampling import run_sampling
 from .save import KreaPhotonSaveImage
 from .schedules import (ALPHA, PLUNGE_SIGMA_FLOOR, SHIFT, SOFT_PLUNGE_MAX, alpha_for_latent, build_schedule,
@@ -185,7 +186,7 @@ def _result_with_preview(out, vae):
     return {"ui": ui, "result": (out,)}
 
 
-def _explicit_phase_model(explicit, plan_model, phase):
+def _explicit_phase_model(explicit, plan_model, phase, identity_scale=1.0):
     """Phase model for the composition ("clean") or texture slot.
 
     An explicitly connected clean_model / texture_model wins over the plan on
@@ -198,7 +199,7 @@ def _explicit_phase_model(explicit, plan_model, phase):
     the identity LoRA set (no split). A plan-less input is returned unchanged."""
     if explicit is None:
         return plan_model
-    clean, identity, texture = build_phase_models(explicit)
+    clean, identity, texture = build_phase_models(explicit, identity_scale=identity_scale)
     own = clean if phase == "composition" else texture
     return own if own is not None else identity
 
@@ -239,6 +240,7 @@ class KreaPhotonSampler:
                                                               "tooltip": _RESTART_ENHANCE_TOOLTIP}),
                 "texture_model": ("MODEL", {"tooltip": _TEXTURE_MODEL_TOOLTIP}),
                 "coherence": (COHERENCE_OPTIONS, {"default": "off", "tooltip": _COHERENCE_TOOLTIP}),
+                "precision_profile": (PROFILE_OPTIONS, {"default": "auto", "tooltip": PRECISION_TOOLTIP}),
             },
         }
 
@@ -248,7 +250,8 @@ class KreaPhotonSampler:
 
     def sample(self, model, positive, latent_image, seed, preset, variety,
               preview_method="auto", denoise=1.0, negative=None, clean_model=None, vae=None,
-              seed_b=-1, blend=0.0, restart_enhance="off", texture_model=None, coherence="off"):
+              seed_b=-1, blend=0.0, restart_enhance="off", texture_model=None, coherence="off",
+              precision_profile="auto"):
         p = PRESETS[preset]
         a_latent, a_cond = VARIETY_LEVELS[variety]
         alpha = _preset_alpha(p, latent_image)
@@ -260,10 +263,13 @@ class KreaPhotonSampler:
         refine_steps = COHERENCE["refine_steps"] if (explicit_refine or preset_refine_auto) else 0
         refine_mode = "auto" if (preset_refine_auto and not explicit_refine) else "on"
         # LoRA phase plan (KreaPhoton LoRA Phase nodes upstream) -> phase models;
-        # explicitly connected clean_model / texture_model win for their phase
-        plan_clean, model, plan_texture = build_phase_models(model)
-        clean_model = _explicit_phase_model(clean_model, plan_clean, "composition")
-        texture_model = _explicit_phase_model(texture_model, plan_texture, "texture")
+        # explicitly connected clean_model / texture_model win for their phase.
+        # The precision profile (int8 = identity) scales identity-phase LoRAs / detail
+        # and sets the composition -> identity boundary.
+        _, prof = resolve_node_profile(model, precision_profile)
+        plan_clean, model, plan_texture = build_phase_models(model, identity_scale=prof["identity_lora_scale"])
+        clean_model = _explicit_phase_model(clean_model, plan_clean, "composition", prof["identity_lora_scale"])
+        texture_model = _explicit_phase_model(texture_model, plan_texture, "texture", prof["identity_lora_scale"])
         if denoise < 1.0:
             # refine / img2img: partial clean descent on the input latent (feed a
             # VAE-encoded image into latent_image). Fresh partial noise; restart/
@@ -298,7 +304,7 @@ class KreaPhotonSampler:
                 noise=noise,
                 contraction=p["contraction"], per_channel_contraction=False,
                 manifold_std=MANIFOLD_STD, manifold_mean=MANIFOLD_MEAN,
-                detail_amount=p["detail_a"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
+                detail_amount=p["detail_a"] * prof["detail_a_scale"], order=_ORDER_FROM_SAMPLER_NAME[p["sampler"]],
                 solver=p["sampler"], eta_tail=p.get("eta_tail") if denoise >= 1.0 else None,
                 pc=p.get("pc", "off") if denoise >= 1.0 else "off",
                 refine_mode=refine_mode if denoise >= 1.0 else "on",
@@ -306,7 +312,7 @@ class KreaPhotonSampler:
                 x0_extrap_order=p.get("x0_extrap_order", 1), x0_trust=p.get("x0_trust", 0.0),
                 eta0=eta0, sigma_gate=p["sigma_gate"],
                 x0_extrapolation=p["x0_extrapolation"],
-                clean_model=clean_model, composition_end=0.85,
+                clean_model=clean_model, composition_end=prof["composition_end"],
                 variety_a_latent=a_latent, variety_a_cond=a_cond, variety_seed=seed,
                 variety_end=VARIETY_END, variety_cond_taps=VARIETY_COND_TAPS,
                 restart_hook=restart_hook, texture_model=texture_model,
@@ -422,6 +428,7 @@ class KreaPhotonSamplerAdvanced:
                                        "tooltip": _X0_TRUST_TOOLTIP}),
                 "pc": (["off", "selective", "auto"], {"default": "off", "tooltip": _PC_TOOLTIP}),
                 "refine_mode": (["on", "auto"], {"default": "on", "tooltip": _REFINE_MODE_TOOLTIP}),
+                "precision_profile": (PROFILE_OPTIONS, {"default": "auto", "tooltip": PRECISION_TOOLTIP}),
             },
         }
 
@@ -440,11 +447,13 @@ class KreaPhotonSamplerAdvanced:
               coherence_jump=0.0, coherence_jump_sigma=COHERENCE["jump_sigma"], eta_tail=-1.0,
               guidance_sigma="model", detail_space="step", detail_sigma_hi=DETAIL_SIGMA[0],
               detail_sigma_peak=DETAIL_SIGMA[1], detail_sigma_lo=DETAIL_SIGMA[2], x0_extrap_order=1,
-              x0_trust=0.0, pc="off", refine_mode="on"):
+              x0_trust=0.0, pc="off", refine_mode="on", precision_profile="auto"):
         v_seed = seed if variety_seed < 0 else int(variety_seed)
-        plan_clean, model, plan_texture = build_phase_models(model)
-        clean_model = _explicit_phase_model(clean_model, plan_clean, "composition")
-        texture_model = _explicit_phase_model(texture_model, plan_texture, "texture")
+        # precision profile: only the identity-LoRA scale - the numeric widgets run as typed
+        _, prof = resolve_node_profile(model, precision_profile)
+        plan_clean, model, plan_texture = build_phase_models(model, identity_scale=prof["identity_lora_scale"])
+        clean_model = _explicit_phase_model(clean_model, plan_clean, "composition", prof["identity_lora_scale"])
+        texture_model = _explicit_phase_model(texture_model, plan_texture, "texture", prof["identity_lora_scale"])
         noise = _blend_noise(model, latent_image, seed, seed_b, blend)
         restart_hook = _restart_hook_for(restart_enhance, vae)
         with _live_preview(preview_method):

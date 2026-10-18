@@ -111,7 +111,7 @@ def _plan_free_clone(model):
     return p
 
 
-def build_phase_models(model, loader=_default_loader, apply_lora=_default_apply):
+def build_phase_models(model, loader=_default_loader, apply_lora=_default_apply, identity_scale: float = 1.0):
     """(clean_model, model, texture_model) for the samplers.
 
     No plan -> (None, model, None): the model is used as is. With a plan the
@@ -124,7 +124,10 @@ def build_phase_models(model, loader=_default_loader, apply_lora=_default_apply)
     weakref level; a two-level chain of throwaway clones freed by the cyclic GC
     in one pass leaves the entry dead - 'memory leak with model Krea2', dead
     entries piling up and a full gc.collect() per model load (2026-10-01,
-    research/precision/leak_mech.py)."""
+    research/precision/leak_mech.py).
+
+    identity_scale multiplies the strength of identity-phase entries (IDENTITY_PHASES) -
+    the precision profile's correction (presets.PRECISION_PROFILES); 1.0 = the plan as written."""
     plan = list((getattr(model, "model_options", None) or {}).get(PLAN_KEY, []))
     if not plan:
         return None, model, None
@@ -139,7 +142,10 @@ def build_phase_models(model, loader=_default_loader, apply_lora=_default_apply)
         p = base if not key else _plan_free_clone(model)
         for i in key:
             entry = plan[i]
-            p = apply_lora(p, loader(entry["lora_name"]), float(entry["strength"]))
+            strength = float(entry["strength"])
+            if entry["phase"] in IDENTITY_PHASES:
+                strength *= float(identity_scale)
+            p = apply_lora(p, loader(entry["lora_name"]), strength)
         built[key] = p
         return p
 

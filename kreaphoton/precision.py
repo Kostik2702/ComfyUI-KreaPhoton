@@ -12,9 +12,15 @@ not a signal); resolve_profile() maps that, or the node's override, to a
 presets.PRECISION_PROFILES key. No comfy import: QuantizedTensor is recognised by its
 _layout_cls string (comfy/quant_ops.py register_layout_class names).
 """
+import json
+import os
 from dataclasses import dataclass
 
 PROFILE_OPTIONS = ["auto", "int8", "full"]
+PRECISION_TOOLTIP = ("Which calibration to use for this checkpoint's weight precision. auto = detect: "
+                     "int8 / fp8 checkpoints use the int8 calibration (bit-exact v1.8), bf16 / fp16 "
+                     "use the full-precision profile. The detected format is printed in the log.")
+PROFILE_PATCH_ENV = "KREAPHOTON_PROFILE_PATCH"   # calibration only: path to {"full": {...}}, re-read per call
 FULL_KINDS = ("bf16", "fp16", "fp32")
 
 _DTYPE_KIND = {
@@ -90,3 +96,23 @@ def describe(info: PrecisionInfo, profile: str, override: str) -> str:
     return "precision: %s (compute %s, quantized %.0f%%) -> profile %s (%s)" % (
         info.kind, info.compute_dtype, 100.0 * info.quantized_fraction, profile,
         "auto" if override == "auto" else "override")
+
+
+def resolve_node_profile(model, override):
+    """(profile name, profile dict) for a node run, logged. The dict is a copy: a calibration
+    patch (KREAPHOTON_PROFILE_PATCH) never touches presets.PRECISION_PROFILES."""
+    from .presets import PRECISION_PROFILES, validate_precision_profiles
+    info = detect_precision(model)
+    name = resolve_profile(info, override)
+    profile = dict(PRECISION_PROFILES[name])
+    patched = ""
+    path = os.environ.get(PROFILE_PATCH_ENV)
+    if path:
+        with open(path, encoding="utf-8") as f:
+            patch = json.load(f).get(name, {})
+        if patch:
+            profile.update(patch)
+            validate_precision_profiles({name: profile})
+            patched = " PATCHED by %s %s" % (PROFILE_PATCH_ENV, json.dumps(patch, sort_keys=True))
+    print("[KreaPhoton] " + describe(info, name, override) + patched)
+    return name, profile

@@ -8,6 +8,7 @@ import importlib
 import importlib.util
 import os
 import sys
+import tempfile
 
 import torch
 
@@ -157,10 +158,77 @@ def test_lora_flags(lp):
     print("     zero flags dropped silently, rsLoRA / DoRA flag = 1 rejected with the file name")
 
 
+NEUTRAL = {"identity_lora_scale": 1.0, "face_boost_scale": 1.0, "detail_a_scale": 1.0, "composition_end": 0.85}
+
+
+def test_profiles(presets):
+    assert presets.validate_precision_profiles() is True
+    assert presets.PRECISION_PROFILES["int8"] == NEUTRAL, "int8 must stay the identity (bit-exact int8 runs)"
+    assert set(presets.PRECISION_PROFILES) == {"int8", "full"}
+    bad = {"int8": dict(NEUTRAL), "full": dict(NEUTRAL, composition_end=1.2)}
+    _raises(lambda: presets.validate_precision_profiles(bad), needle="composition_end")
+    bad = {"int8": dict(NEUTRAL), "full": {"identity_lora_scale": 1.0}}
+    _raises(lambda: presets.validate_precision_profiles(bad), needle="missing")
+    print("     int8 profile is the identity; validator rejects bad ranges and missing keys")
+
+
+class PlanPatcher:
+    def __init__(self, opts=None, applied=None):
+        self.model_options = dict(opts or {})
+        self.applied = list(applied or [])
+
+    def clone(self):
+        return PlanPatcher(self.model_options, self.applied)
+
+
+def test_identity_scale(lp):
+    plan = [{"lora_name": "anna", "strength": 1.0, "phase": "identity"},
+            {"lora_name": "style", "strength": 0.5, "phase": "texture"}]
+    model = PlanPatcher({lp.PLAN_KEY: plan})
+
+    def apply(p, lora, strength):
+        p.applied.append((lora, strength))
+        return p
+
+    clean, ident, tex = lp.build_phase_models(model, loader=lambda n: n, apply_lora=apply, identity_scale=1.25)
+    assert ident.applied == [("anna", 1.25)], ident.applied
+    assert tex.applied == [("anna", 1.25), ("style", 0.5)], tex.applied
+    assert clean.applied == [], "composition segment carries no LoRA here"
+    _, ident1, tex1 = lp.build_phase_models(model, loader=lambda n: n, apply_lora=apply)
+    assert ident1.applied == [("anna", 1.0)] and tex1.applied == [("anna", 1.0), ("style", 0.5)]
+    print("     identity_scale multiplies identity-phase entries only; default 1.0 unchanged")
+
+
+def test_profile_patch(pr, tmp_dir):
+    bf16 = pr.PrecisionInfo("bf16", 0.0, "torch.bfloat16")
+    real_detect = pr.detect_precision
+    pr.detect_precision = lambda m: bf16
+    path = os.path.join(tmp_dir, "profile_patch.json")
+    try:
+        os.environ.pop("KREAPHOTON_PROFILE_PATCH", None)
+        name, prof = pr.resolve_node_profile("MODEL", "auto")
+        assert name == "full" and prof["composition_end"] == 0.85
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"full": {"composition_end": 0.8, "identity_lora_scale": 1.15}}')
+        os.environ["KREAPHOTON_PROFILE_PATCH"] = path
+        name, prof = pr.resolve_node_profile("MODEL", "auto")
+        assert prof["composition_end"] == 0.8 and prof["identity_lora_scale"] == 1.15, prof
+        name, prof = pr.resolve_node_profile("MODEL", "int8")
+        assert prof["composition_end"] == 0.85, "a patch for 'full' never touches 'int8'"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"full": {"composition_end": 1.4}}')
+        _raises(lambda: pr.resolve_node_profile("MODEL", "auto"), needle="composition_end")
+    finally:
+        os.environ.pop("KREAPHOTON_PROFILE_PATCH", None)
+        pr.detect_precision = real_detect
+    print("     KREAPHOTON_PROFILE_PATCH: re-read per call, validated, scoped to its profile")
+
+
 def main():
     pr = _load("precision")
     smp, sch = _load("sampling"), _load("schedules")
     lp = _load("lora_phase")
+    presets = _load("presets")
     print("=" * 78)
     print("test_precision")
     print("=" * 78)
@@ -172,6 +240,12 @@ def main():
     test_nonfinite(smp, sch)
     print("[4] LoRA trainer-flag guard")
     test_lora_flags(lp)
+    print("[5] precision profiles")
+    test_profiles(presets)
+    print("[6] build_phase_models identity_scale")
+    test_identity_scale(lp)
+    print("[7] KREAPHOTON_PROFILE_PATCH")
+    test_profile_patch(pr, tempfile.mkdtemp())
     print("\ntest_precision: ALL PASSED")
 
 

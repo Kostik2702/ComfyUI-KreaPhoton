@@ -254,6 +254,17 @@ def test_node():
     _, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "standard", 1, identity_boost=1.0)
     assert face_builds == [] and all(c["model"].name == "texture" for c in calls), (face_builds, [c["model"].name for c in calls])
     assert "identity boost" not in report, report
+    # precision profile (2026-10-01): the face boost is scaled by the profile's face_boost_scale
+    real_profile = fdl.resolve_node_profile
+    fdl.resolve_node_profile = lambda m, override: ("full", {"identity_lora_scale": 1.0, "face_boost_scale": 0.8,
+                                                             "detail_a_scale": 1.0, "composition_end": 0.85})
+    try:
+        calls.clear(); face_builds.clear()
+        _, _, report = node.detail(model, "pos", img, _FakeVAE(), 5, "standard", 1)
+        assert [round(b, 6) for b in face_builds] == [1.2], face_builds
+        assert "precision profile full: identity boost x1.50 -> x1.20" in report, report
+    finally:
+        fdl.resolve_node_profile = real_profile
     # no plan + boost -> raw model, report says the boost was ignored
     calls.clear()
     _, _, report = node.detail(_FakeModel(name="raw"), "pos", img, _FakeVAE(), 5, "subtle", 1)
@@ -353,7 +364,7 @@ def test_node():
     assert list(it["required"]) == ["model", "positive", "image", "vae", "seed", "preset", "max_faces", "identity_boost"]
     assert it["required"]["identity_boost"][1]["default"] == 1.5
     assert list(it["optional"]) == ["negative", "face_positive", "reference_image", "upscale_model", "tune",
-                                    "ref_mean_guidance"]
+                                    "ref_mean_guidance", "precision_profile"]
     print("  [7] node control flow with fakes ... ok")
 
 

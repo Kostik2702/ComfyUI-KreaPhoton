@@ -53,6 +53,7 @@ import torch.nn.functional as F
 from . import face_detect
 from .face_geometry import choose_best, crop_box, face_mask, paste, place_mask, retry_schedule, select_faces
 from .lora_phase import PLAN_KEY, build_face_model, build_phase_models
+from .precision import PRECISION_TOOLTIP, PROFILE_OPTIONS, resolve_node_profile
 from .presets import (DEFAULT_FACE_PRESET, FACE_COMMON, FACE_PRESETS, GUIDANCE, MANIFOLD_MEAN, MANIFOLD_STD,
                       preset_guidance, validate_face_presets)
 from .ref_mean import REF_MEAN_EXPERIMENTAL_BETA, RefMeanHook, build_reference_bank
@@ -192,6 +193,7 @@ class KreaPhotonFaceDetailer:
                 "tune": ("STRING", {"default": "", "multiline": False, "tooltip": _TUNE_TOOLTIP}),
                 "ref_mean_guidance": ("BOOLEAN", {"default": False, "label_on": "experimental", "label_off": "off",
                                                   "tooltip": _REF_MEAN_TOOLTIP}),
+                "precision_profile": (PROFILE_OPTIONS, {"default": "auto", "tooltip": PRECISION_TOOLTIP}),
             },
         }
 
@@ -201,7 +203,8 @@ class KreaPhotonFaceDetailer:
     CATEGORY = "KreaPhoton"
 
     def detail(self, model, positive, image, vae, seed, preset, max_faces, identity_boost=1.5, negative=None,
-               face_positive=None, reference_image=None, upscale_model=None, tune="", ref_mean_guidance=False):
+               face_positive=None, reference_image=None, upscale_model=None, tune="", ref_mean_guidance=False,
+               precision_profile="auto"):
         from .nodes import LATENT_PX, ALIGN_PX, _ORDER_FROM_SAMPLER_NAME, _decode_tiled, _encode_tiled
         passes, id_threshold, c = apply_tune_face(FACE_PRESETS[preset], FACE_COMMON, tune)
         if ref_mean_guidance and float(c["rm_beta"]) <= 0.0:
@@ -214,10 +217,14 @@ class KreaPhotonFaceDetailer:
         cond = face_positive if face_positive is not None else positive
         guidance_mode, flat_cfg = preset_guidance(c, negative is not None)
         plan = list((getattr(model, "model_options", None) or {}).get(PLAN_KEY, []))
-        boost = float(identity_boost)
+        profile_name, prof = resolve_node_profile(model, precision_profile)
+        boost = float(identity_boost) * prof["face_boost_scale"]
 
         gate = _gate()
         report = []
+        if prof["face_boost_scale"] != 1.0:
+            report.append("precision profile %s: identity boost x%.2f -> x%.2f"
+                          % (profile_name, float(identity_boost), boost))
         if gate.available:
             report.append("identity gate: ON (%s)" % face_detect.ARCFACE_PACK)
         else:
