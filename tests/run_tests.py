@@ -23,6 +23,7 @@ TESTS = [
     "test_think.py",
     "test_precision.py",
     "test_ui_contract.py",
+    "test_ui_data.py",
 ]
 
 

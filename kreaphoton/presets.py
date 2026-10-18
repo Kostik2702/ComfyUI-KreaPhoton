@@ -104,6 +104,12 @@ RESOLUTION_ASPECTS = list(RESOLUTION_BUCKETS["L (~1.7 MP)"].keys())
 DEFAULT_RESOLUTION_SIZE = "L (~1.7 MP)"
 DEFAULT_RESOLUTION_ASPECT = "3:2"
 
+# --- Media nouns Krea 2 renders literally (prefix sweep 2026-07-07: 'magazine cover' leaked a
+#     whole cover with garbled text, 'snapshot' a polaroid border). The Encode lint chip warns on
+#     these whole words. 'photo' and 'print' are left out: not seen leaking, and they sit in most
+#     prompts ('photo of', 'leopard print'), so a chip on them would be noise. ---
+MEDIA_NOUNS = ("magazine", "cover", "snapshot", "poster")
+
 # --- Variety mix: level -> (a_latent, a_cond). ZPhoton's own latent-axis mixes are
 #     UNVALIDATED (vault decision "ZPhoton - аналитический форк Power Nodes", postscript
 #     2026-07-05: merged without the visual A/B its own gate required) — treat these as a

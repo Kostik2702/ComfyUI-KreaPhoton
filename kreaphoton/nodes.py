@@ -21,6 +21,7 @@ from . import think as think_block
 from .schedules import (ALPHA, PLUNGE_SIGMA_FLOOR, SHIFT, SOFT_PLUNGE_MAX, alpha_for_latent, build_schedule,
                         refine_schedule)
 from .tiling import LatentTiler, LFAnchor
+from .ui_data import sampler_sigmas, scheduler_sigmas
 from .ui_meta import CAT_FINISHING, CAT_SAMPLING, CAT_SETUP
 
 NODE_CLASS_MAPPINGS = {}
@@ -262,14 +263,12 @@ class KreaPhotonSampler:
               precision_profile="auto"):
         p = PRESETS[preset]
         a_latent, a_cond = VARIETY_LEVELS[variety]
-        alpha = _preset_alpha(p, latent_image)
         use_jump = coherence in ("jump", "jump+self_refine")
-        # self-refine: an explicit coherence request runs it; a preset with refine 'auto'
-        # (Sampler v2, quality-plus) builds the pass and lets the loop skip a stable draft
-        explicit_refine = coherence in ("self_refine", "jump+self_refine")
-        preset_refine_auto = p.get("refine", "off") == "auto"
-        refine_steps = COHERENCE["refine_steps"] if (explicit_refine or preset_refine_auto) else 0
-        refine_mode = "auto" if (preset_refine_auto and not explicit_refine) else "on"
+        # the schedule (incl. self-refine and its mode) comes from ui_data.sampler_sigmas - the
+        # same function the sigma strip route calls, so the strip shows what runs here
+        h_lat, w_lat = _latent_hw(latent_image)
+        sched = sampler_sigmas(preset, h_lat, w_lat, coherence=coherence, denoise=denoise)
+        sigmas, refine_mode = sched["sigmas"], sched["refine_mode"]
         # LoRA phase plan (KreaPhoton LoRA Phase nodes upstream) -> phase models;
         # explicitly connected clean_model / texture_model win for their phase.
         # The precision profile (int8 = identity) scales identity-phase LoRAs / detail
@@ -282,15 +281,8 @@ class KreaPhotonSampler:
             # refine / img2img: partial clean descent on the input latent (feed a
             # VAE-encoded image into latent_image). Fresh partial noise; restart/
             # plunge and blend are full-txt2img-only and skipped here.
-            sigmas = refine_schedule(p["n_steps"], alpha=alpha, denoise=denoise)
             noise = None
         else:
-            sigmas = build_schedule(p["n_steps"], alpha=alpha, restart_frac=p["restart_frac"],
-                                    sigma_r=p["sigma_r"], plunge=p["plunge"],
-                                    refine_steps=refine_steps if p["plunge"] else 0,
-                                    refine_sigma=COHERENCE["refine_sigma"],
-                                    plunge_sigma=p.get("plunge_sigma", PLUNGE_SIGMA_FLOOR),
-                                    soft_plunge=p.get("soft_plunge", 0))
             noise = _blend_noise(model, latent_image, seed, seed_b, blend)
         restart_hook = _restart_hook_for(restart_enhance, vae)
 
@@ -554,13 +546,10 @@ class KreaPhotonScheduler:
 
     def build(self, steps, alpha, restart_frac, sigma_r, plunge, latent=None, refine_steps=0,
               refine_sigma=COHERENCE["refine_sigma"], plunge_sigma=PLUNGE_SIGMA_FLOOR, soft_plunge=0):
-        if latent is not None:
-            h, w = _latent_hw(latent)
-            alpha = alpha_for_latent(h, w, alpha)
-        return (build_schedule(steps, alpha=alpha, restart_frac=restart_frac,
-                               sigma_r=sigma_r, plunge=plunge,
-                               refine_steps=refine_steps if plunge else 0, refine_sigma=refine_sigma,
-                               plunge_sigma=float(plunge_sigma), soft_plunge=int(soft_plunge)),)
+        h, w = _latent_hw(latent) if latent is not None else (None, None)
+        return (scheduler_sigmas(steps, alpha, restart_frac, sigma_r, plunge, h_lat=h, w_lat=w,
+                                 refine_steps=refine_steps, refine_sigma=refine_sigma,
+                                 plunge_sigma=plunge_sigma, soft_plunge=soft_plunge),)
 
 
 class KreaPhotonEmptyLatent:
