@@ -44,6 +44,10 @@ flowchart LR
   EN[Encode] --> LP[LoRA Phase ×n] --> SA[Sampler] --> VD[VAE Decode] --> UP[Upscale v2] --> FD[Face Detailer] --> SV[Save Image]
 ```
 
+On the canvas, nodes are coloured by the part of the trajectory they can change, and the Sampler,
+Scheduler and LoRA Phase show a σ strip: one cell per model call, coloured by phase, the same count
+the sampler logs. Details: [docs/REFERENCE.md, Node UI](docs/REFERENCE.md#node-ui).
+
 ## How it samples
 
 Krea 2 Turbo is a rectified-flow model: the state is `x = (1 − σ)·image + σ·noise`, and σ runs from

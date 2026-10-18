@@ -27,7 +27,8 @@ Sampler, Scheduler and LoRA Phase (compact); the Empty Latent readout; Encode an
 ## Assumed defaults (owner did not decide; concept leaves them open)
 
 - ASSUMED: LoRA Phase compact strip uses the preset of the first KreaPhoton sampler downstream on its
-  MODEL output; none found → `turbo/quality`; the caption names the source.
+  MODEL output; none found → the default preset (`DEFAULT_PRESET`, turbo/balanced); the caption
+  names the source.
 - ASSUMED: unknown latent size (no Empty Latent upstream) → L 3:2, said in the caption (concept §7.3).
 - ASSUMED: `precision_profile` auto → the route uses `composition_end` shared by all profiles; if
   profiles ever disagree, the caption says "auto: int8 boundary shown".

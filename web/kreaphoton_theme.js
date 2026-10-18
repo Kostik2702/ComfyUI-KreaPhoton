@@ -60,7 +60,7 @@ function enabled(override) {
     }
 }
 
-function themeName() {
+export function themeName() {
     try {
         const id = String(app.extensionManager?.setting?.get("Comfy.ColorPalette") ?? "dark");
         return id.toLowerCase().includes("light") ? "light" : "dark";

@@ -547,6 +547,52 @@ deep enough to show them — leave it out for scenes with people behind the subj
 
 ---
 
+## Node UI
+
+The canvas extensions in `web/` change only what the nodes look like; headless and API runs, the
+outputs and the saved widget values are untouched. Every added element is a DOM widget that is
+not serialized, so a workflow saved with or without them loads with identical `widgets_values`.
+
+**Colours** (`kreaphoton_theme.js`). A node takes the colour of the part of the σ trajectory it can
+change: composition blue (Sampler, Sampler (Advanced), Scheduler, Composition Drafts — can move the
+layout, from σ 1.0), identity green (LoRA Phase `identity`, from σ 0.85 down), texture amber
+(Upscale v2, Upscale (classic), Face Detailer, LoRA Phase `texture` — below σ ≈ 0.65, cannot move
+layout or identity). Empty Latent, Encode and Save Image keep the theme colour. LoRA Phase follows
+its `phase` widget. A colour you set yourself is never changed.
+
+**σ strip** (`kreaphoton_strip.js`) on Sampler, Scheduler and, compact, on LoRA Phase. One cell per
+model call over the σ curve (each cell is one step σ → next: the draft readout drops to 0, a
+restart or self-refine jump is the rise at the next cell). Cell colours: blue composition (σ above
+`composition_end`), green identity, grey the draft readout, amber texture (the restart tail),
+green hatched = self-refine calls that run only if the draft still moves (`refine` auto,
+quality-plus); a tick above a cell = an extra predictor-corrector call. The shaded band is the
+restart. The caption counts the calls in words; the number equals the `calls=` the sampler logs
+(checked on every preset, 2026-10-18; with self-refine skipped the log shows the total minus the
+hatched cells, corrector calls are logged apart as `pc_calls`). The Sampler takes the latent size
+from an Empty Latent upstream; without one it shows the L 3:2 schedule and says so. On LoRA Phase
+the cells its LoRA patches are lit, on the schedule of the first KreaPhoton sampler downstream
+(through other LoRA Phase nodes; Sampler (Advanced) through its Scheduler), else the default
+preset. Phases come from the sampler's own split (`plan_segments`), so the strip shows the model
+routing a full LoRA plan gets.
+
+**Readout** on Empty Latent: pixel size, megapixels, orientation and aspect.
+
+**Lint chips** (non-blocking): Encode — a media noun Krea 2 renders literally (`magazine`, `cover`,
+`snapshot`, `poster`, plurals too) in `text`, or in `custom_directive` when `style` is custom;
+Scheduler — `refine_steps` > 0 without `plunge`, and a schedule with a restart feeding any node
+other than KreaPhoton Sampler (Advanced) (stock `SamplerCustom` ignores the restart jump).
+
+**Settings** (KreaPhoton group): node colours on / off, σ strip on / off.
+
+**Routes** (read-only, `server_routes.py`): `GET /kreaphoton/ui` — resolution table, preset
+summaries, LoRA phases, media nouns, phase boundaries; `GET /kreaphoton/schedule?node=sampler&preset=
+&coherence=&denoise=&w=&h=&profile=` or `?node=scheduler&steps=&alpha=&restart_frac=&sigma_r=&plunge=
+&refine_steps=&refine_sigma=&plunge_sigma=&soft_plunge=&w=&h=` — the schedule as σ values plus one
+entry per model call; HTTP 400 with the reason on bad input. Both call the functions the nodes run
+(`ui_data.sampler_sigmas`, `scheduler_sigmas`, `describe_schedule`).
+
+---
+
 ## Quick start
 
 ```

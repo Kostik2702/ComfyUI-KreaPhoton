@@ -1,8 +1,10 @@
 """Node-library metadata shared by every node module (node-ui-concept P0).
 
-Categories are numbered because the library sorts them alphabetically and the pack is used in
-a fixed order: setup -> preview -> sampling -> finishing -> output. Category and display name
-are not stored in saved workflows, so changing them never breaks a workflow.
+Categories are numbered to name the fixed order the pack is used in: setup -> preview ->
+sampling -> finishing -> output. The library itself lists sub-categories in node REGISTRATION
+order (frontend 1.53.6, checked live 2026-10-17), so NODE_CLASS_MAPPINGS keeps the pipeline
+order too. Category and display name are not stored in saved workflows, so changing them never
+breaks a workflow.
 """
 
 ROOT = "KreaPhoton"
