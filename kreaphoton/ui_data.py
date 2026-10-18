@@ -159,7 +159,7 @@ def ui_static():
 
 # ---------------------------------------------------------------- node UI P3
 # Sections, relevance and "Start from preset..." (node-ui-concept s5-s6). The widget order is
-# frozen, so a section is a set of widget names, not a range; the JS draws it as an accordion.
+# frozen, so a section is a set of widget names, not a range; the JS groups it on screen (the saved order stays frozen).
 
 # summary kinds: value (a widget's value), changed (count against the reference), switch (off
 # while the widget is 0, else the text with {v}), any_on (on when any widget is > 0), inputs (the

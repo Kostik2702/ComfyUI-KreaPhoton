@@ -35,10 +35,14 @@ owner decision Q2, 2026-10-18), "More inputs" on the simple Sampler.
 ## Assumed defaults (owner did not decide; concept leaves them open)
 
 - ASSUMED A1: dimmed = 42 % opacity, still editable (native `disabled` hides the value, see above).
-- ASSUMED A2: sections are an accordion, one open at a time. The frozen order scatters a section's
-  widgets (Solver: `sampler_order` is widget 2, `x0_extrapolation` 24, `x0_extrap_order` / `x0_trust`
-  40–41, `pc` 42), so with two sections open their widgets would interleave; with one open, every
-  visible widget belongs to it and sits under its header (headers are moved around it).
+- A2 (owner, 2026-10-18: "желательно поправить" the first accordion): any number of sections open.
+  The frozen order scatters a section's widgets (Solver: `sampler_order` is widget 2,
+  `x0_extrapolation` 24, `x0_extrap_order` / `x0_trust` 40–41, `pc` 42), so `node.widgets` is
+  regrouped for display and `guardOrder` keeps the file positional: `onSerialize` writes
+  `widgets_values` (and `widgets_values_named`) back in the frozen order, `configure` gets the frozen
+  order for its positional restore (load, paste, undo). Checked live: serialized order equals the
+  INPUT_TYPES order with four sections open, round trip and clone keep every value, removing the
+  guard changes the serialized order (the guard is what holds it).
 - ASSUMED A3: `precision_profile` (added after the concept) goes into "Phase models" on Advanced and
   into "More inputs" on the simple Sampler.
 - ASSUMED A4: "Start from preset…" sets the widgets a preset controls (solver, noise, detail,
@@ -81,7 +85,7 @@ owner decision Q2, 2026-10-18), "More inputs" on the simple Sampler.
 
 ### T3 — JS (`web/kreaphoton_sections.js`)
 
-- [x] Section headers (accordion, summary right), "More inputs" on Sampler, "Start from preset…" with
+- [x] Section headers (any number open, summary right), "More inputs" on Sampler, "Start from preset…" with
       Scheduler fill and note, changed dots via label, dimming (canvas `drawWidget` wrapper + Vue row
       opacity) with the reason line, setting.
 

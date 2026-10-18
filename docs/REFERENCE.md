@@ -584,12 +584,14 @@ other than KreaPhoton Sampler (Advanced) (stock `SamplerCustom` ignores the rest
 
 **Sections** (`kreaphoton_sections.js`) on Sampler (Advanced): Solver, Noise, Detail envelope,
 Guidance, Perturbed attention, Variety and blend, Coherence, Phase models (with
-`precision_profile`), Preview; `seed` stays on top. One section is open at a time: the frozen
-widget order scatters a section's widgets (`x0_extrapolation` sits far from `sampler_order`), so
-the open one shows its widgets under its header and the others are hidden. A hidden widget is
-still saved and still sent to the server. The header shows the solver, the guidance mode,
-"off" / "scale 1", the connected phase models or "2 of 5 changed". The open section is saved in
-the node's properties. With 43 widgets the node is 456 px tall with every section closed (was
+`precision_profile`), Preview; `seed` stays on top. Any number of sections can be open, each
+with its widgets under its header. The frozen widget order scatters a section's widgets
+(`x0_extrapolation` sits far from `sampler_order`), so the node regroups them on screen only: the
+workflow file keeps them in the frozen order (written back on save, restored before load, paste
+and undo), so `widgets_values` are exactly what the node without the extension writes. A closed
+section's widgets are hidden, still saved and still sent to the server. The header shows the
+solver, the guidance mode, "off" / "scale 1", the connected phase models or "2 of 5 changed".
+The open sections are saved in the node's properties. With 43 widgets the node is 456 px tall with every section closed (was
 about 1,290 flat). The simple Sampler gets a "More inputs" section for `seed_b`, `blend`,
 `restart_enhance`, `coherence` and `precision_profile`, closed by default, with "1 of 5 changed".
 

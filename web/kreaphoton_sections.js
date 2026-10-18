@@ -7,11 +7,12 @@
 // /kreaphoton/preset_values (kreaphoton/ui_data.py, every rule proven by tests/test_ui_relevance.py).
 // JS only evaluates the rule conditions on the current widget values.
 //
-// The widget order is frozen (widgets_values is positional), and a section's widgets are scattered
-// over it, so sections are an accordion: one open at a time, its widgets shown (in their frozen
-// order), the others hidden with widget.hidden - still serialized and still sent to the server.
-// Headers, the preset picker and the notes are DOM widgets with serialize = false; moving those in
-// node.widgets does not touch widgets_values. A dimmed widget keeps its value and stays editable:
+// The widget order is frozen (widgets_values is positional) and a section's widgets are scattered
+// over it. Sampler (Advanced) shows each section's widgets under its header by regrouping
+// node.widgets for display only: guardOrder writes widgets_values back in the frozen order on save
+// and restores that order before configure (load, paste, undo). A closed section's widgets are
+// hidden with widget.hidden - still serialized and still sent to the server. Headers, the preset
+// picker and the notes are DOM widgets with serialize = false. A dimmed widget keeps its value and stays editable:
 // the frontend's own `disabled` (1.53.6) hides the value and swallows clicks, so the canvas dims it
 // by wrapping its drawWidget, and the Vue renderer by the opacity of its row.
 import { app } from "../../scripts/app.js";
@@ -213,6 +214,49 @@ function paintHeader(w, { open, title, summary, changed, note, dotColor }) {
     w.kpHeight = HEADER_H + (note ? NOTE_LINE : 0);
 }
 
+// ---------------------------------------------------------------- the frozen order
+
+// The serialized widgets in their frozen Python order, captured before anything moves. Sections
+// regroup node.widgets for display, but serialize() writes widgets_values in node.widgets order:
+// onSerialize puts the values back into this order, and configure() (load, paste, undo) gets the
+// widgets in this order for its positional restore. Saved workflows stay identical.
+function guardOrder(node, onConfigured) {
+    const canonical = node.widgets.filter((w) => w.serialize !== false);
+    const restore = () => {
+        const rest = node.widgets.filter((w) => !canonical.includes(w));
+        node.widgets.splice(0, node.widgets.length, ...canonical.filter((w) => node.widgets.includes(w)), ...rest);
+    };
+    const configure = node.configure;
+    node.configure = function () {
+        restore();
+        try {
+            return configure.apply(this, arguments);
+        } finally {
+            onConfigured();
+        }
+    };
+    const onSerialize = node.onSerialize;
+    node.onSerialize = function (o) {
+        const r = onSerialize?.apply(this, arguments);
+        const shown = node.widgets.filter((w) => w.serialize !== false);
+        // only a pure permutation of the captured widgets is put back; anything else is left alone
+        if (Array.isArray(o.widgets_values) && o.widgets_values.length === shown.length
+            && shown.length === canonical.length && shown.every((w) => canonical.includes(w))) {
+            const byWidget = new Map(shown.map((w, i) => [w, o.widgets_values[i]]));
+            o.widgets_values = canonical.map((w) => byWidget.get(w));
+            const named = o.widgets_values_named;
+            if (named && typeof named === "object") {
+                const out = {};
+                for (const w of canonical) if (w.name in named) out[w.name] = named[w.name];
+                for (const k of Object.keys(named)) if (!(k in out)) out[k] = named[k];
+                o.widgets_values_named = out;
+            }
+        }
+        return r;
+    };
+    return { canonical, restore };
+}
+
 // ---------------------------------------------------------------- the sections controller
 
 function attachSections(node, kind) {
@@ -221,19 +265,28 @@ function attachSections(node, kind) {
     const headers = new Map();
     let picker = null;
     let dimNote = null;
+    let order = null;
     let sections = [];
     let lastLayout = null;
     let flash = "";
 
     const toggle = (id) => {
-        props.kp_open_section = props.kp_open_section === id ? null : id;
+        const open = new Set(props.kp_open_sections ?? []);
+        if (open.has(id)) open.delete(id);
+        else open.add(id);
+        props.kp_open_sections = sections.map((s) => s.id).filter((s) => open.has(s));
         lastLayout = null;
     };
 
-    if (kind === "advanced") picker = attachPicker(node, (msg) => {
-        flash = msg;
-        lastLayout = null;
-    });
+    if (kind === "advanced") {
+        order = guardOrder(node, () => {
+            lastLayout = null;
+        });
+        picker = attachPicker(node, (msg) => {
+            flash = msg;
+            lastLayout = null;
+        });
+    }
     if (kind === "scheduler") {
         const box = makeBox(0);
         box.style.height = "100%";
@@ -268,8 +321,8 @@ function attachSections(node, kind) {
             setLabel(w, changed, exp.has(w.name));
         }
 
-        const open = on ? props.kp_open_section ?? null : null;
-        const layoutKey = JSON.stringify([on, open, flash, themeName(), sections.map((s) => s.id),
+        const open = new Set(on ? props.kp_open_sections ?? [] : []);
+        const layoutKey = JSON.stringify([on, [...open], flash, themeName(), sections.map((s) => s.id),
             sections.map((sec) => sec.widgets.map((n) => [vals[n], dim.has(n)])),
             ["clean_model", "texture_model", "vae"].map((i) => inputLinked(node, i)),
             node.inputs?.filter((i) => i.widget && i.link != null).map((i) => i.name), props.kp_reference?.preset]);
@@ -288,13 +341,14 @@ function attachSections(node, kind) {
             lastLayout = layoutKey;
             for (const sec of sections) {
                 const hw = headers.get(sec.id);
+                const isOpen = open.has(sec.id);
                 const changed = sec.widgets.filter((n) => n in ref && !same(vals[n], ref[n])).length;
                 // an open section lists why its widgets are dimmed; a closed one only the headline
                 // rules (the simple Sampler's denoise note)
                 const reasons = [...new Set(sec.widgets.filter((n) => dim.has(n))
-                    .map((n) => dim.get(n)).filter((why) => open === sec.id || headline.has(why)))];
+                    .map((n) => dim.get(n)).filter((why) => isOpen || headline.has(why)))];
                 paintHeader(hw, {
-                    open: open === sec.id, title: (changed && kind === "advanced" ? DOT : "") + sec.title,
+                    open: isOpen, title: (changed && kind === "advanced" ? DOT : "") + sec.title,
                     summary: summaryText(sec, node, vals, changed), changed: changed > 0 && kind === "advanced",
                     note: reasons.join(". "), dotColor: color,
                 });
@@ -302,10 +356,11 @@ function attachSections(node, kind) {
                 hw.element.style.display = on ? "" : "none";
                 for (const name of sec.widgets) {
                     const w = node.widgets.find((x) => x.name === name);
-                    if (w) w.hidden = on && open !== sec.id && !widgetLinked(node, w);
+                    if (w) w.hidden = on && !isOpen && !widgetLinked(node, w);
                 }
             }
-            placeHeaders(node, sections, headers, open, picker);
+            if (kind === "advanced") groupWidgets(node, sections, headers, picker, on, order);
+            else placeHeader(node, sections[0], headers.get(sections[0]?.id));
             if (picker) picker.kpPaint(props, flash);
             relayout(node);
         }
@@ -314,27 +369,31 @@ function attachSections(node, kind) {
     });
 }
 
-// headers sit around the open section: the ones before it (and its own) right above its first
-// widget, the ones after it right below its last; with none open they follow the preset picker
-function placeHeaders(node, sections, headers, open, picker) {
-    const hws = sections.map((s) => headers.get(s.id));
-    for (const hw of hws) node.widgets.splice(node.widgets.indexOf(hw), 1);
-    const indexOf = (name) => node.widgets.findIndex((w) => w.name === name);
-    let anchor = picker ? node.widgets.indexOf(picker) + 1 : -1;
-    if (anchor < 0) {
-        const first = Math.min(...sections.flatMap((s) => s.widgets.map(indexOf)).filter((i) => i >= 0));
-        anchor = Number.isFinite(first) ? first : node.widgets.length;
-    }
-    const k = sections.findIndex((s) => s.id === open);
-    if (k < 0) {
-        node.widgets.splice(anchor, 0, ...hws);
+// Sampler (Advanced): every section's header directly above its own widgets (the frozen order is
+// restored on save and load by guardOrder). Sections off: the frozen list, headers hidden.
+function groupWidgets(node, sections, headers, picker, on, order) {
+    const hws = new Set(headers.values());
+    const secOf = new Map(sections.flatMap((s) => s.widgets.map((n) => [n, s.id])));
+    if (!on) {
+        order.restore();
+        node.widgets.splice(node.widgets.indexOf(picker), 1);
+        const at = Math.max(node.widgets.findIndex((w) => w.name === "control_after_generate"),
+            node.widgets.findIndex((w) => w.name === "seed"));
+        node.widgets.splice(at + 1, 0, picker);
         return;
     }
-    const members = sections[k].widgets.map(indexOf).filter((i) => i >= 0);
-    const first = Math.min(...members);
-    node.widgets.splice(first, 0, ...hws.slice(0, k + 1));
-    const last = Math.max(...sections[k].widgets.map(indexOf).filter((i) => i >= 0));
-    node.widgets.splice(last + 1, 0, ...hws.slice(k + 1));
+    const ws = node.widgets;
+    const top = ws.filter((w) => !hws.has(w) && w !== picker && !secOf.has(w.name));
+    const grouped = sections.flatMap((s) => [headers.get(s.id), ...ws.filter((w) => secOf.get(w.name) === s.id)]);
+    node.widgets.splice(0, ws.length, ...top, picker, ...grouped);
+}
+
+// the simple Sampler: its "More inputs" widgets are contiguous at the end, the header goes above them
+function placeHeader(node, sec, hw) {
+    if (!sec || !hw) return;
+    node.widgets.splice(node.widgets.indexOf(hw), 1);
+    const first = node.widgets.findIndex((w) => sec.widgets.includes(w.name));
+    node.widgets.splice(first < 0 ? node.widgets.length : first, 0, hw);
 }
 
 // ---------------------------------------------------------------- Start from preset...
@@ -436,7 +495,7 @@ app.registerExtension({
             id: SETTING_SECTIONS,
             category: ["KreaPhoton", "Nodes", "Advanced sections"],
             name: "KreaPhoton: sections on Sampler (Advanced)",
-            tooltip: "Group the 43 widgets of Sampler (Advanced) into collapsible sections, one open at a time. "
+            tooltip: "Group the 43 widgets of Sampler (Advanced) into collapsible sections, each under its header. "
                 + "Off shows the flat list; changed dots and dimming stay.",
             type: "boolean",
             defaultValue: true,
