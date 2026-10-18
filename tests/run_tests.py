@@ -24,6 +24,7 @@ TESTS = [
     "test_precision.py",
     "test_ui_contract.py",
     "test_ui_data.py",
+    "test_grain.py",
 ]
 
 

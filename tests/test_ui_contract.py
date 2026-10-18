@@ -55,6 +55,7 @@ FROZEN_INPUTS = {
         ["model", "positive", "latent_image", "vae", "seed", "preset", "n_drafts", "draft_calls", "seed_step",
          "variety"],
         ["negative", "clean_model", "coherence", "layout"]),
+    "KreaPhotonFilmGrain": (["image", "seed", "amount", "size", "color", "response"], []),
 }
 
 # Library order follows the pipeline (node-ui-concept section 8).
@@ -63,6 +64,7 @@ EXPECTED_CATEGORY = {
     "KreaPhotonCompositionDrafts": "2 Preview",
     "KreaPhotonSampler": "3 Sampling", "KreaPhotonSamplerAdvanced": "3 Sampling", "KreaPhotonScheduler": "3 Sampling",
     "KreaPhotonUpscale": "4 Finishing", "KreaPhotonUpscaleV2": "4 Finishing", "KreaPhotonFaceDetailer": "4 Finishing",
+    "KreaPhotonFilmGrain": "4 Finishing",
     "KreaPhotonSaveImage": "5 Output",
 }
 
@@ -140,7 +142,8 @@ def main():
             pass
     check_order("KreaPhotonEncode", Appended)
     assert FROZEN_INPUTS["KreaPhotonEncode"] == real
-    print("     11/11 match; planted swap and insertion caught, an append passes")
+    print("     %d/%d match; planted swap and insertion caught, an append passes"
+          % (len(FROZEN_INPUTS), len(FROZEN_INPUTS)))
 
     print("[2] categories follow the pipeline")
     assert ui.CATEGORIES == tuple(ui.ROOT + "/" + c for c in
@@ -173,7 +176,7 @@ def main():
         assert all(isinstance(t, str) and t.strip() for t in tips), (name, tips)
         aliases = getattr(cls, "SEARCH_ALIASES", None)
         assert isinstance(aliases, list) and aliases and all(isinstance(a, str) and a for a in aliases), name
-    print("     11/11 complete")
+    print("     %d/%d complete" % (len(nodes.NODE_CLASS_MAPPINGS), len(nodes.NODE_CLASS_MAPPINGS)))
 
     print("[4] display names: the original Upscale is marked classic, not deprecated")
     assert nodes.NODE_DISPLAY_NAME_MAPPINGS["KreaPhotonUpscale"] == "KreaPhoton Upscale (classic)"
