@@ -582,10 +582,55 @@ routing a full LoRA plan gets.
 Scheduler — `refine_steps` > 0 without `plunge`, and a schedule with a restart feeding any node
 other than KreaPhoton Sampler (Advanced) (stock `SamplerCustom` ignores the restart jump).
 
-**Settings** (KreaPhoton group): node colours on / off, σ strip on / off.
+**Sections** (`kreaphoton_sections.js`) on Sampler (Advanced): Solver, Noise, Detail envelope,
+Guidance, Perturbed attention, Variety and blend, Coherence, Phase models (with
+`precision_profile`), Preview; `seed` stays on top. One section is open at a time: the frozen
+widget order scatters a section's widgets (`x0_extrapolation` sits far from `sampler_order`), so
+the open one shows its widgets under its header and the others are hidden. A hidden widget is
+still saved and still sent to the server. The header shows the solver, the guidance mode,
+"off" / "scale 1", the connected phase models or "2 of 5 changed". The open section is saved in
+the node's properties. With 43 widgets the node is 456 px tall with every section closed (was
+about 1,290 flat). The simple Sampler gets a "More inputs" section for `seed_b`, `blend`,
+`restart_enhance`, `coherence` and `precision_profile`, closed by default, with "1 of 5 changed".
+
+**Changed dots**: a dot before a widget (and before the section title) whose value differs from the
+reference — the widget's default, or the values "Start from preset…" wrote. Sampler v2 widgets
+(`eta_tail`, `guidance_sigma`, `detail_space`, `detail_sigma_*`, `x0_extrap_order`, `x0_trust`,
+`pc`, `refine_mode`) carry " · exp" after the name.
+
+**Dimming**: a widget without effect under the current values is drawn at 42 % and stays
+editable; the open section says why in one line. Sampler (Advanced): `flat_cfg` needs
+`guidance_mode` flat; `delta`, `guidance_lo` / `hi` need window or band; `guidance_sigma` needs
+window / band or `pag_scale` > 0; `guidance_rescale` needs a guidance mode; the detail envelope
+needs `detail_amount` ≠ 0, `detail_start` / `end` / `peak` need `detail_space` step and
+`detail_sigma_*` need sigma; `x0_extrap_order` / `x0_trust` need `x0_extrapolation` > 0; the PAG
+window and blocks need `pag_scale` > 0; `coherence_jump_sigma` needs `coherence_jump` > 0;
+`seed_b` needs `blend` > 0; `variety_end` / `variety_seed` need a variety amount; `texture_start`
+needs a texture model (`texture_model`, or a LoRA Phase `texture` or `composition+identity`
+with strength ≠ 0 upstream). Sampler: at `denoise` < 1 `blend`, `seed_b`, `coherence` and
+`restart_enhance` dim with "Refine runs a plain descent…", shown on the closed section too.
+Scheduler: `sigma_r` needs `restart_frac` > 0 and ≥ 4 steps; `refine_steps`, `plunge_sigma`,
+`soft_plunge` need `plunge`; `refine_sigma` needs `plunge` and `refine_steps` > 0. Every rule is
+proven on the code the node runs (`tests/test_ui_relevance.py`: no effect under the false
+condition, an effect under the true one).
+
+**Start from preset…** on Sampler (Advanced) writes the widgets a preset controls (solver, noise,
+detail, guidance — window only when `negative` is connected, as on the simple Sampler — x0,
+`pc`, `refine_mode`, `composition_end`, PAG and coherence jump off) and all nine widgets of a
+KreaPhoton Scheduler on `sigmas`. Seed, preview, variety, `seed_b`, `blend`, `restart_enhance`,
+`precision_profile` and `texture_start` are yours and stay. The result runs exactly what the
+simple Sampler runs with that preset (variety and coherence off, denoise 1): checked argument by
+argument for every preset, with and without a negative, for each precision profile, and pixel
+for pixel on turbo/balanced, turbo/quality-plus and raw/experimental. The Scheduler's alpha is
+resolution-aware only with its `latent` input connected; the note says so when it is not.
+
+**Settings** (KreaPhoton group): node colours on / off, σ strip on / off, sections on Sampler
+(Advanced) on / off (off = the flat list; dots and dimming stay).
 
 **Routes** (read-only, `server_routes.py`): `GET /kreaphoton/ui` — resolution table, preset
-summaries, LoRA phases, media nouns, phase boundaries; `GET /kreaphoton/schedule?node=sampler&preset=
+summaries, LoRA phases, media nouns, phase boundaries, sections, relevance rules, widget
+defaults; `GET /kreaphoton/preset_values?preset=&profile=&negative=` — what "Start from preset…"
+writes; `GET /kreaphoton/schedule?node=sampler&preset=
 &coherence=&denoise=&w=&h=&profile=` or `?node=scheduler&steps=&alpha=&restart_frac=&sigma_r=&plunge=
 &refine_steps=&refine_sigma=&plunge_sigma=&soft_plunge=&w=&h=` — the schedule as σ values plus one
 entry per model call; HTTP 400 with the reason on bad input. Both call the functions the nodes run

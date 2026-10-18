@@ -7,14 +7,17 @@ filesystem, so the modal walks the tree via this endpoint. Read-only: it lists s
 only, never reads or writes files.
 
 GET /kreaphoton/ui - static data for the node UI (resolution table, presets, LoRA phases, media
-nouns); GET /kreaphoton/schedule - the schedule a Sampler or Scheduler with these widgets runs,
-one entry per model call (ui_data.describe_schedule). Both read-only, computed by the same
-functions the nodes run, so the JS never re-implements the maths.
+nouns, sections, relevance rules, widget defaults); GET /kreaphoton/schedule - the schedule a
+Sampler or Scheduler with these widgets runs, one entry per model call
+(ui_data.describe_schedule); GET /kreaphoton/preset_values - what "Start from preset..." writes
+into Sampler (Advanced) and its Scheduler. All read-only, computed by the same functions the
+nodes run, so the JS never re-implements the maths.
 
 Import is wrapped so the plain-assert test suite (no ComfyUI/aiohttp) can import
 the package without a running server."""
 from .save import list_dirs
-from .ui_data import describe_schedule, sampler_sigmas, scheduler_sigmas, shared_composition_end, ui_static
+from .ui_data import (describe_schedule, preset_widget_values, sampler_sigmas, scheduler_sigmas,
+                      shared_composition_end, ui_static)
 
 _MAX_PX = 16384
 
@@ -110,6 +113,31 @@ def schedule_payload(query):
     return out
 
 
+# nodes whose widget defaults the UI needs (changed dots, "More inputs" count)
+_DEFAULT_NODES = ("KreaPhotonSampler", "KreaPhotonSamplerAdvanced", "KreaPhotonScheduler")
+
+
+def ui_payload():
+    """The /kreaphoton/ui response: ui_static() plus each widget's INPUT_TYPES default."""
+    from . import nodes
+    out = ui_static()
+    defaults = {}
+    for name in _DEFAULT_NODES:
+        it = getattr(nodes, name).INPUT_TYPES()
+        spec = {**it["required"], **it.get("optional", {})}
+        defaults[name] = {k: v[1]["default"] for k, v in spec.items()
+                          if len(v) > 1 and isinstance(v[1], dict) and "default" in v[1]}
+    out["defaults"] = defaults
+    return out
+
+
+def preset_payload(query):
+    """The /kreaphoton/preset_values response; ValueError on bad input."""
+    from .presets import DEFAULT_PRESET
+    return preset_widget_values(query.get("preset") or DEFAULT_PRESET, query.get("profile") or "auto",
+                                _bool(query, "negative", False))
+
+
 _REGISTERED = False
 try:
     from server import PromptServer
@@ -128,7 +156,7 @@ try:
 
         @PromptServer.instance.routes.get("/kreaphoton/ui")
         async def kreaphoton_ui(request):
-            return web.json_response(ui_static())
+            return web.json_response(ui_payload())
 
         @PromptServer.instance.routes.get("/kreaphoton/schedule")
         async def kreaphoton_schedule(request):
@@ -136,6 +164,14 @@ try:
             &restart_frac=&sigma_r=&plunge=&refine_steps=&refine_sigma=&plunge_sigma=&soft_plunge=&w=&h="""
             try:
                 return web.json_response(schedule_payload(dict(request.query)))
+            except ValueError as e:
+                return web.json_response({"error": str(e)}, status=400)
+
+        @PromptServer.instance.routes.get("/kreaphoton/preset_values")
+        async def kreaphoton_preset_values(request):
+            """?preset=&profile=&negative= -> the widget values "Start from preset..." writes."""
+            try:
+                return web.json_response(preset_payload(dict(request.query)))
             except ValueError as e:
                 return web.json_response({"error": str(e)}, status=400)
 

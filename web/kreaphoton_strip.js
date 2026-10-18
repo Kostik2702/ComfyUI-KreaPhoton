@@ -10,7 +10,8 @@
 // writes widgets_values, so saved workflows keep their positional values. Each widget polls its
 // node every 400 ms, builds the query from the graph (own widgets, the Empty Latent upstream, the
 // sampler downstream of a LoRA Phase) and fetches only when the query changed - one mechanism
-// that follows widget edits, links, upstream nodes and workflow loads alike.
+// that follows widget edits, links, upstream nodes and workflow loads alike. The helpers are exported
+// for kreaphoton_sections.js (P3).
 import { app } from "../../scripts/app.js";
 import { themeName } from "./kreaphoton_theme.js";
 
@@ -22,7 +23,7 @@ const LINE_H = 22;
 const CHIP_H = 18;
 
 // docs/design/node-ui-concept.md section 3
-const TOKENS = {
+export const TOKENS = {
     dark: {
         composition: "#3987e5", identity: "#199e70", texture: "#d95926", draft: "#b3b9b5",
         band: "rgba(74, 42, 32, 0.55)", warn: "#e0a33a", curve: "#c8ccc9", off: "#3a3f41",
@@ -37,7 +38,7 @@ const PHASE_COLOR = { composition: "composition", identity: "identity", draft: "
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 let uiPromise = null;
-function loadUI() {
+export function loadUI() {
     uiPromise ??= fetch("/kreaphoton/ui").then((r) => (r.ok ? r.json() : null)).catch(() => null);
     return uiPromise;
 }
@@ -64,7 +65,7 @@ function stripEnabled() {
 
 // ---------------------------------------------------------------- graph helpers
 
-const widgetValue = (node, name) => node?.widgets?.find((w) => w.name === name)?.value;
+export const widgetValue = (node, name) => node?.widgets?.find((w) => w.name === name)?.value;
 
 // links and nodes are looked up in the node's own graph: inside a subgraph that is not app.graph
 function linkById(graph, id) {
@@ -73,7 +74,7 @@ function linkById(graph, id) {
 }
 
 // the node feeding input `name`, through Reroute nodes
-function upstream(node, name) {
+export function upstream(node, name) {
     let cur = node;
     let slot = cur?.inputs?.findIndex((i) => i.name === name);
     for (let hop = 0; hop < 16 && cur && slot >= 0; hop++) {
@@ -89,7 +90,7 @@ function upstream(node, name) {
 }
 
 // nodes fed by output `slot`, through Reroute nodes
-function downstream(node, slot) {
+export function downstream(node, slot) {
     const out = [];
     const seen = new Set();
     const walk = (n, s, depth) => {
@@ -113,7 +114,7 @@ function latentSize(node, inputName, ui) {
     return wh ? { w: wh[0], h: wh[1] } : null;
 }
 
-function params(obj) {
+export function params(obj) {
     const p = new URLSearchParams();
     for (const [k, v] of Object.entries(obj)) if (v !== undefined && v !== null) p.set(k, String(v));
     return p.toString();
@@ -166,7 +167,7 @@ function loraTarget(node, ui) {
 
 // ---------------------------------------------------------------- drawing
 
-function el(tag, style, text) {
+export function el(tag, style, text) {
     const e = document.createElement(tag);
     if (style) Object.assign(e.style, style);
     if (text !== undefined) e.textContent = text;
@@ -230,7 +231,7 @@ function drawStrip(svg, data, { compact = false, lit = null } = {}) {
     });
 }
 
-function makeBox(height) {
+export function makeBox(height) {
     const box = el("div", {
         display: "flex", flexDirection: "column", gap: "2px", boxSizing: "border-box",
         height: `${height}px`, padding: "2px 0", overflow: "hidden", pointerEvents: "auto",
@@ -238,7 +239,7 @@ function makeBox(height) {
     return box;
 }
 
-function captionEl(lines = 1) {
+export function captionEl(lines = 1) {
     return el("div", {
         font: "11px/14px var(--comfy-font, sans-serif)", color: "var(--descrip-text, #9a9a9a)",
         fontVariantNumeric: "tabular-nums", overflow: "hidden", maxHeight: `${14 * lines}px`,
@@ -247,11 +248,11 @@ function captionEl(lines = 1) {
     });
 }
 
-function addWidget(node, name, element, height) {
+export function addWidget(node, name, element, height, margin = 4) {
     const w = node.addDOMWidget(name, "kp_ui", element, {
         serialize: false,
         hideOnZoom: false,
-        margin: 4,                 // the frontend default (10 px) eats a third of a 48 px chip row
+        margin,                    // the frontend default (10 px) eats a third of a 48 px chip row
         getMinHeight: () => w.kpHeight ?? height,
         getMaxHeight: () => w.kpHeight ?? height,
     });
@@ -260,7 +261,7 @@ function addWidget(node, name, element, height) {
     return w;
 }
 
-function setHeight(node, w, height) {
+export function setHeight(node, w, height) {
     if (w.kpHeight === height) return;
     w.kpHeight = height;
     w.element.style.display = height ? "" : "none";
@@ -269,7 +270,7 @@ function setHeight(node, w, height) {
     node.setDirtyCanvas?.(true, true);
 }
 
-function poll(node, w, tick) {
+export function poll(node, w, tick) {
     let last = null;
     let attached = false;
     let timer = null;
