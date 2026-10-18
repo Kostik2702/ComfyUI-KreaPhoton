@@ -20,6 +20,7 @@ TESTS = [
     "test_nodes.py",
     "test_face.py",
     "test_composition.py",
+    "test_think.py",
     "test_precision.py",
 ]
 

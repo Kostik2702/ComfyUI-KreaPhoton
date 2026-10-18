@@ -17,6 +17,7 @@ from .noise import slerp_noise
 from .precision import PRECISION_TOOLTIP, PROFILE_OPTIONS, resolve_node_profile
 from .sampling import run_sampling
 from .save import KreaPhotonSaveImage
+from . import think as think_block
 from .schedules import (ALPHA, PLUNGE_SIGMA_FLOOR, SHIFT, SOFT_PLUNGE_MAX, alpha_for_latent, build_schedule,
                         refine_schedule)
 from .tiling import LatentTiler, LFAnchor
@@ -593,13 +594,24 @@ _STYLE_TOOLTIP = ("Aesthetic directive prepended to the prompt (krea2 responds s
 _CUSTOM_DIRECTIVE_TOOLTIP = ("Your own leading style directive (used only when style=custom). "
                              "Use mood/quality adjectives, NOT media nouns - 'magazine cover' / "
                              "'snapshot' render as literal text/frames in the image.")
+_THINK_TOOLTIP = ("EXPERIMENTAL: layout requirements in an assistant <think> turn of the Qwen "
+                  "template. off = stock encode (unchanged). manual = the think_text below. auto = "
+                  "the loaded Qwen restates the layout facts the prompt states (greedy, re-run only "
+                  "when the prompt changes); sentences with negations, a count or a position / shot "
+                  "word the prompt does not give are dropped; think_text is appended. Measured: acts like the same "
+                  "sentence added to the prompt; followed literally - it changes shot scale and "
+                  "makes seeds more alike. See the `think` output for the text used.")
+_THINK_TEXT_TOOLTIP = ("Layout requirements for think=manual, or additions after the auto plan. "
+                       "Short positive English sentences: how many, who is where (left / right / "
+                       "front / behind), whose hand holds what, shot size. No negations.")
 
 
 class KreaPhotonEncode:
     """krea2-native text encode with an aesthetic style directive. Feeds the prompt
     through the correct KREA2_TEMPLATE path (plain clip.tokenize, unlike
     CLIPTextEncodeLumina2 which injects a foreign Lumina2 system prefix), optionally
-    prepending a calibrated style directive (KREA2-NODES prefix-sweep)."""
+    prepending a calibrated style directive (KREA2-NODES prefix-sweep) and an optional
+    assistant think block with layout requirements (think.py)."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -613,22 +625,40 @@ class KreaPhotonEncode:
             "optional": {
                 "custom_directive": ("STRING", {"default": "", "multiline": True,
                                                 "tooltip": _CUSTOM_DIRECTIVE_TOOLTIP}),
+                "think": (list(think_block.THINK_MODES), {"default": "off", "tooltip": _THINK_TOOLTIP}),
+                "think_text": ("STRING", {"default": "", "multiline": True, "tooltip": _THINK_TEXT_TOOLTIP}),
             },
         }
 
-    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_TYPES = ("CONDITIONING", "STRING")
+    RETURN_NAMES = ("CONDITIONING", "think")
     FUNCTION = "encode"
     CATEGORY = CATEGORY
 
-    def encode(self, clip, text, style, custom_directive=""):
+    def encode(self, clip, text, style, custom_directive="", think="off", think_text=""):
         if style == "custom":
             directive = custom_directive.strip()
             if directive and not directive.endswith((" ", ",", ".", ":", ";")):
                 directive += ", "
         else:
             directive = STYLE_DIRECTIVES.get(style) or ""
-        tokens = clip.tokenize(directive + text)
-        return (clip.encode_from_tokens_scheduled(tokens),)
+        full = directive + text
+        content = ""
+        if think != "off":
+            if think_block.is_raw_template(full):
+                print("[KreaPhoton Encode] think ignored: the prompt is already a raw <|im_start|> template")
+            else:
+                plan, dropped = think_block.generate_plan(clip, text) if think == "auto" else ("", [])
+                content = think_block.compose_think(think, think_text, plan)
+                if dropped:
+                    print("[KreaPhoton Encode] think=auto: dropped from the plan: " + " | ".join(dropped))
+                if think == "auto" and not plan:
+                    print("[KreaPhoton Encode] think=auto: no layout plan (empty generation or every sentence dropped)")
+        if content:
+            tokens = clip.tokenize(full, llama_template=think_block.think_template(content))
+        else:
+            tokens = clip.tokenize(full)
+        return (clip.encode_from_tokens_scheduled(tokens), content)
 
 
 class KreaPhotonLoraPhase:

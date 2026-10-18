@@ -30,7 +30,7 @@ is labeled as such, in the README and in `presets.py`.
 | **KreaPhoton Sampler (Advanced)** | Same engine, SIGMAS input, every parameter exposed (+ `x0_extrapolation`, `variety_seed`, `pag_*`, `guidance_rescale`). |
 | **KreaPhoton Scheduler** | SIGMAS generator with the restart segment encoded (see warning below); optional `self_refine` second descent. |
 | **KreaPhoton Empty Latent** | Photo aspect ratios / megapixel tiers for Krea2 (16-channel latent). |
-| **KreaPhoton Encode** | krea2-native text encode (plain `KREA2_TEMPLATE` path) with an optional calibrated style directive. |
+| **KreaPhoton Encode** | krea2-native text encode (plain `KREA2_TEMPLATE` path) with an optional calibrated style directive and an optional layout `think` block (manual / auto). |
 | **KreaPhoton LoRA Phase** | Records a LoRA + strength + phase (composition / identity / texture / …) in a plan the model carries; the KreaPhoton samplers, upscalers and the Face Detailer expand the plan into phase models with comfy's ordinary LoRA patching (works on int8 / fp8 checkpoints). Chain one per LoRA. |
 | **KreaPhoton Save Image** | Save with folder picker, timestamp+counter unique names, PNG/JPEG/WebP metadata. Local-only power-user feature (the folder browser has no path allowlist - do not expose a `--listen` server). |
 | **KreaPhoton Upscale** | Faithful tiled ×1.25–×2.0 upscale with the same Krea 2 model: latent tiles re-blended every step (no seams), back-projection to the source (the downscaled result *is* the source), presets only, optional SR-model base. |
@@ -467,6 +467,34 @@ prepended to the prompt: `off` (default, faithful / literal), `editorial`, `cine
 instruction text) or `custom` (uses `custom_directive`). Krea2 renders media nouns
 literally — avoid "magazine", "cover", "snapshot", "poster" in prompts, they leak as text
 and borders.
+
+**Think block (experimental).** `think` = `off` (default, the stock encode above, unchanged) /
+`manual` / `auto` adds an assistant turn `<think>…</think>` with layout requirements to the
+Qwen template; its tokens stay in the conditioning. `manual` uses `think_text`; `auto` lets
+the loaded Qwen restate, in one to three sentences, only the layout facts the prompt itself
+states — counts, positions, who holds what, facing, shot size, camera height — without
+choosing any the prompt leaves open (greedy, so the same prompt gives the same plan; ComfyUI
+re-runs it only when the prompt changes), then appends `think_text`. The plan is filtered in
+code: a sentence with a negation, talk about the prompt, a count the prompt does not give or a
+position / direction / shot word the prompt never uses is dropped (listed in the console), a
+refusal discards the plan, and an unfinished last sentence goes when generation hit its 96-token
+cap; an empty result means no think block. `think_text` is never filtered. The second output,
+`think`, returns the text that was used. A prompt that already starts with `<|im_start|>` (a
+hand-written template) is left as is.
+
+Why restate-only (probe of 22 prompts, `research/think_spike/plan_prompt_probe.py`): the first
+planner prompt made Qwen pick a position, facing, a medium shot and eye level for nearly every
+prompt, invent a person on a still life and write "There are no people." for "no people" —
+over-specification that narrows seed diversity. `auto` is therefore an emphasis of the prompt's
+own layout facts, not a layout designer; to impose a layout the prompt does not state, write it
+in `think_text` with `manual`.
+
+What to expect (measured on Composition Drafts, 16 prompts × 8 seeds): the think slot acts
+like the same sentence added to the prompt — Krea 2's DiT reads text tokens as an unordered
+set. An explicit layout sentence is followed literally: it changes the shot scale and the
+subject size and makes seeds look more alike. Use it to pin a layout, not as a free
+accuracy gain. Write short positive English sentences (how many, who is where, whose hand
+holds what, shot size); negations do not work on Turbo.
 
 ### KreaPhoton Save Image
 
