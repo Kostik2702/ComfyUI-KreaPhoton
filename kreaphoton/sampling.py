@@ -231,12 +231,14 @@ def plan_segments(sig_list, *, composition_end=0.85, has_clean=False, texture_st
                  index with sigma <= texture_start - on the calibrated grids that is
                  the plunge readout (sigma 0) right before the restart jump, so the
                  texture model owns exactly the restart segment.
+    A cut at index 0 (a partial descent that starts below the boundary) sets the
+    starting phase instead of opening an empty segment.
     Pure, unit-tested (tests/test_sampling.py [13])."""
     n = len(sig_list)
     cuts = []
     if has_clean:
         i = next((k for k, s in enumerate(sig_list) if s <= composition_end), None)
-        if i is not None and 0 < i < n - 1:
+        if i is not None and 0 <= i < n - 1:
             cuts.append((i, "identity"))
     if has_texture:
         # texture phase = the restart segment: from the readout before the LAST
@@ -249,9 +251,10 @@ def plan_segments(sig_list, *, composition_end=0.85, has_clean=False, texture_st
             i = jumps[-1]
         if i is None:
             i = next((k for k, s in enumerate(sig_list) if s <= texture_start), None)
-        if i is not None and 0 < i < n - 1:
+        if i is not None and 0 <= i < n - 1:
             cuts.append((i, "texture"))
-    cuts.sort()
+    order = {"identity": 0, "texture": 1}     # both at one index: the later phase wins
+    cuts.sort(key=lambda c: (c[0], order[c[1]]))
     phase0 = "composition" if has_clean else "identity"
     segs = []
     start, phase = 0, phase0
@@ -967,7 +970,7 @@ def run_sampling(model, positive, negative, latent_dict, sigmas, *, seed,
         model = phase_models[phase]
         segments = [(0, len(sig_list) - 1, phase)]
     if len(segments) == 1:
-        return _run_one(model, positive, negative, latent_dict, sigmas,
+        return _run_one(phase_models[segments[0][2]], positive, negative, latent_dict, sigmas,
                         seed=seed, noise=noise, add_noise=add_noise,
                         variety_a_latent=variety_a_latent if variety_idx is not None else 0.0,
                         variety_state="pending" if variety_idx is not None else "off",

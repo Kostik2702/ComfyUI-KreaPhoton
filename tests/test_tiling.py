@@ -177,8 +177,8 @@ def main():
                                  texture_start=presets.UPSCALE_TEXTURE_START, has_texture=True)
         assert all(ph != "composition" for _, _, ph in segs), segs
         if float(sig[0]) <= presets.UPSCALE_TEXTURE_START:
-            assert segs == [(0, p["n_steps"], "identity")], ("no cut possible at index 0 -> the node must "
-                                                             "run the texture model directly", segs)
+            assert segs == [(0, p["n_steps"], "texture")], ("a start inside the texture phase -> the whole "
+                                                            "run on the texture model", segs)
         else:
             assert [ph for _, _, ph in segs] == ["identity", "texture"], segs
     print("     alpha(tile) %.3f; sigma0 polish/detail/strong = %.3f / %.3f / %.3f (< 0.85)" % (

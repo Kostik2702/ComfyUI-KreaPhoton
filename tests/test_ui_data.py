@@ -137,9 +137,10 @@ def main():
                             "sigma_r": "0.65", "plunge": "true"})
     assert c["sigmas"] == sched.build(16, 3.158, 0.25, 0.65, True)[0].tolist()
     d6 = R.schedule_payload({"node": "sampler", "preset": "turbo/quality", "denoise": "0.6"})
-    # a partial descent: no plunge readout, no self-refine; below texture_start the plan's texture
-    # model runs it (plan_segments' descending fallback), the strip shows that routing
+    # a partial descent: no plunge readout, no self-refine; it starts at 0.821, below composition_end,
+    # so no composition call; below texture_start the plan's texture model runs it (descending fallback)
     assert d6["counts"]["draft"] == 0 and d6["counts"]["refine"] == 0 and d6["counts"]["total"] == 16, d6["counts"]
+    assert d6["counts"]["composition"] == 0 and d6["counts"]["identity"] > 0, d6["counts"]
     assert all(c["phase"] == "texture" for c in d6["calls"] if c["sigma"] <= 0.65), d6["calls"]
     for bad in ({"node": "sampler", "preset": "nope"}, {"node": "x"}, {"node": "sampler", "w": "abc"},
                 {"node": "sampler", "denoise": "0"}, {"node": "scheduler", "steps": "0"}):

@@ -920,9 +920,9 @@ class KreaPhotonUpscale:
             if extra.get("alpha"):
                 alpha = float(extra["alpha"])
             sigmas = refine_schedule(p["n_steps"], alpha=alpha, denoise=p["denoise"])
-            # plan_segments can only cut at 0 < i < n-1: when the descent already starts
-            # inside the texture phase the whole run belongs to the texture model
-            # (it carries the identity LoRAs too - lora_phase.PHASE_SEGMENTS).
+            # when the descent already starts inside the texture phase the whole run belongs
+            # to the texture model (it carries the identity LoRAs too - lora_phase.PHASE_SEGMENTS);
+            # run_model also gives process_latent_in the model that actually runs.
             run_model, texture_model = model, plan_texture
             if plan_texture is not None and float(sigmas[0]) <= UPSCALE_TEXTURE_START:
                 run_model, texture_model = plan_texture, None

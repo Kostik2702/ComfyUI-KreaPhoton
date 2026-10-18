@@ -426,6 +426,31 @@ def main():
     assert [p for _, _, p in both_sr] == ["composition", "identity", "texture"]
     assert both_sr[1][0] == 6 and both_sr[1][1] == jumps[-1], "identity phase spans structure tail + self-refine pass"
     print("     self-refine schedule: texture phase = last jump (restart), refine pass stays in identity")
+    # a partial descent (denoise < 1) that starts below a boundary starts in the later phase:
+    # 2026-10-18 the missing cut at index 0 ran a 0.821-start descent wholly on clean_model
+    d6 = sch.refine_schedule(16, alpha=3.158, denoise=0.6).tolist()
+    assert 0.65 < d6[0] <= 0.85, d6[0]
+    k6 = next(k for k, s in enumerate(d6) if s <= 0.65)
+    assert smp.plan_segments(d6, has_clean=True) == [(0, len(d6) - 1, "identity")]
+    assert smp.plan_segments(d6, has_clean=True, has_texture=True) == [(0, k6, "identity"),
+                                                                       (k6, len(d6) - 1, "texture")]
+    d3 = sch.refine_schedule(16, alpha=3.158, denoise=0.3).tolist()
+    assert d3[0] <= 0.65, d3[0]
+    assert smp.plan_segments(d3, has_texture=True) == [(0, len(d3) - 1, "texture")]
+    assert smp.plan_segments(d3, has_clean=True, has_texture=True) == [(0, len(d3) - 1, "texture")]
+    # ... and a single-segment plan runs ITS phase's model
+    runs = []
+    real_run_one = smp._run_one
+    smp._run_one = lambda m, *a, **kw: runs.append(m) or {"samples": None}
+    try:
+        lat = {"samples": torch.zeros(1, 4, 8, 8)}
+        smp.run_sampling("ID", None, None, lat, torch.tensor(d6), seed=1, clean_model="CLEAN")
+        smp.run_sampling("ID", None, None, lat, torch.tensor(d3), seed=1, clean_model="CLEAN",
+                         texture_model="TEX")
+    finally:
+        smp._run_one = real_run_one
+    assert runs == ["ID", "TEX"], runs
+    print("     partial descent below a boundary starts in the later phase (cut at index 0), on that model")
 
     # --- (14) coherence jump-back (v1.4): once, state rescaled, declared sigma raised ---
     print("[14] coherence_jump: one-time rescale + declared sigma, 0 = bit-exact no-op")
